@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Intercom - Administración</title>
+    <link rel="stylesheet" href="css/styles.css">
+    <link rel="stylesheet" href="css/admin-dark.css">
+</head>
+<body>
+    <div class="admin-container">
+        <header>
+            <h1>Intercom - Administración</h1>
+            <button id="logoutBtn" class="btn btn-secondary">Cerrar Sesión</button>
+        </header>
+
+        <nav class="tabs">
+            <button class="tab active" data-tab="users">Usuarios</button>
+            <button class="tab" data-tab="groups">Grupos</button>
+            <button class="tab" data-tab="permissions">Permisos</button>
+        </nav>
+
+        <!-- Users Tab -->
+        <section id="users-tab" class="tab-content active">
+            <div class="section-header">
+                <h2>Usuarios</h2>
+                <button id="addUserBtn" class="btn btn-primary">+ Nuevo Usuario</button>
+            </div>
+            <table id="usersTable">
+                <thead>
+                    <tr>
+                        <th>ID</th>
+                        <th>Usuario</th>
+                        <th>Nombre</th>
+                        <th>Rol</th>
+                        <th>Sala</th>
+                        <th>Acciones</th>
+                    </tr>
+                </thead>
+                <tbody></tbody>
+            </table>
+        </section>
+
+        <!-- Groups Tab -->
+        <section id="groups-tab" class="tab-content">
+            <div class="section-header">
+                <h2>Grupos</h2>
+                <button id="addGroupBtn" class="btn btn-primary">+ Nuevo Grupo</button>
+            </div>
+            <div id="groupsList"></div>
+        </section>
+
+        <!-- Permissions Tab -->
+        <section id="permissions-tab" class="tab-content">
+            <h2>Matriz de Permisos</h2>
+            <div style="display:flex;align-items:center;gap:1rem;margin-bottom:1rem">
+                <p style="color:var(--text-light);font-size:0.875rem;margin:0">
+                    Filas: quién habla &rarr; Columnas: quién escucha
+                </p>
+                <select id="permGroupFilter" style="padding:0.4rem 0.75rem;border-radius:6px;border:1px solid var(--border);font-size:0.875rem">
+                    <option value="">Todos los usuarios</option>
+                </select>
+            </div>
+            <div id="permMatrix" class="matrix-container"></div>
+            <button id="savePermsBtn" class="btn btn-primary">Guardar Permisos</button>
+        </section>
+    </div>
+
+    <!-- User Modal -->
+    <div id="userModal" class="modal">
+        <div class="modal-content">
+            <h3 id="userModalTitle">Nuevo Usuario</h3>
+            <form id="userForm">
+                <input type="hidden" id="userId">
+                <div class="form-group">
+                    <label>Usuario</label>
+                    <input type="text" id="userUsername" required>
+                </div>
+                <div class="form-group">
+                    <label>Contraseña</label>
+                    <input type="password" id="userPassword">
+                </div>
+                <div class="form-group">
+                    <label>Nombre</label>
+                    <input type="text" id="userDisplayName" required>
+                </div>
+                <div class="form-group">
+                    <label>Rol</label>
+                    <select id="userRole">
+                        <option value="user">Usuario</option>
+                        <option value="admin">Admin</option>
+                    </select>
+                </div>
+                <div class="modal-actions">
+                    <button type="submit" class="btn btn-primary">Guardar</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('userModal')">Cancelar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <!-- Group Modal -->
+    <div id="groupModal" class="modal">
+        <div class="modal-content">
+            <h3 id="groupModalTitle">Nuevo Grupo</h3>
+            <form id="groupForm">
+                <input type="hidden" id="groupId">
+                <div class="form-group">
+                    <label>Nombre del Grupo</label>
+                    <input type="text" id="groupName" required>
+                </div>
+                <div class="form-group">
+                    <label>Miembros</label>
+                    <div id="groupMembersCheckboxes" class="checkbox-list"></div>
+                </div>
+                <div class="modal-actions">
+                    <button type="submit" class="btn btn-primary">Guardar</button>
+                    <button type="button" class="btn btn-secondary" onclick="closeModal('groupModal')">Cancelar</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/admin.js"></script>
+</body>
+</html>

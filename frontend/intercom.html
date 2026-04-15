@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Intercom</title>
+    <link rel="stylesheet" href="css/styles.css">
+</head>
+<body>
+    <div class="intercom-container">
+        <header>
+            <h1>Intercom</h1>
+            <div>
+                <span id="userInfo" class="user-info"></span>
+                <span id="janusStatus" class="status-dot" title="Desconectado"></span>
+                <button id="logoutBtn" class="btn btn-secondary btn-sm">Salir</button>
+            </div>
+        </header>
+
+        <!-- Audio device selection -->
+        <div class="device-selection">
+            <div class="form-group">
+                <label>Entrada (micrófono)</label>
+                <select id="inputDevice"></select>
+            </div>
+            <div class="form-group">
+                <label>Salida (altavoz)</label>
+                <select id="outputDevice"></select>
+            </div>
+        </div>
+
+        <!-- RX / TX stats -->
+        <div class="stats-bar" id="statsBar">
+            <span>RX: <strong id="statsRx">--</strong> kbps</span>
+            <span>TX: <strong id="statsTx">--</strong> kbps</span>
+            <span class="stats-detail" id="statsDetail"></span>
+        </div>
+
+        <!-- Incoming audio indicator -->
+        <div class="incoming-audio" id="incomingAudio">
+            <div class="pulse"></div>
+            <span id="incomingFrom">Recibiendo audio de...</span>
+        </div>
+
+
+        <section class="targets-section">
+            <h3>Usuarios</h3>
+            <div id="userTargets" class="targets-grid"></div>
+        </section>
+
+        <section class="targets-section">
+            <h3>🔗 Bridges</h3>
+            <div id="bridgeTargets" class="targets-grid"></div>
+        </section>
+
+        <section class="targets-section">
+            <h3>Grupos</h3>
+            <div id="groupTargets" class="targets-grid"></div>
+        </section>
+    </div>
+
+    <!-- Hidden audio element for incoming audio -->
+    <audio id="remoteAudio" autoplay></audio>
+
+    <script src="https://webrtc.github.io/adapter/adapter-latest.js"></script>
+    <script src="js/janus.js"></script>
+    <script src="js/api.js"></script>
+    <script src="js/intercom.js"></script>
+</body>
+</html>

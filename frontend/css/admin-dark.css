@@ -1,0 +1,255 @@
+/* ========== Admin Dark Theme (Dante Controller style) ========== */
+
+body {
+  --bg: #0d1117;
+  --card-bg: #161b22;
+  --border: #30363d;
+  --text: #e6edf3;
+  --text-light: #8b949e;
+  --primary: #388bfd;
+  --primary-hover: #58a6ff;
+  --danger: #f85149;
+  --danger-hover: #da3633;
+  --success: #3fb950;
+  --active-blue: #388bfd;
+
+  background: var(--bg);
+  color: var(--text);
+}
+
+/* ========== Header ========== */
+.admin-container header {
+  border-bottom-color: var(--border);
+}
+
+.admin-container header h1 {
+  color: var(--text);
+  font-size: 1.25rem;
+}
+
+/* ========== Tabs ========== */
+.tabs {
+  border-bottom-color: var(--border);
+}
+
+.tab {
+  color: var(--text-light);
+}
+
+.tab:hover {
+  color: var(--text);
+}
+
+.tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+/* ========== Table ========== */
+table {
+  background: var(--card-bg);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+
+th {
+  background: #1c2128;
+  color: var(--text-light);
+  border-bottom: 1px solid var(--border);
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+td {
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+
+tr:hover td {
+  background: #1c2128;
+}
+
+/* ========== Permission Matrix — Dante style ========== */
+.matrix-container table {
+  border: 1px solid var(--border);
+}
+
+.matrix-container th {
+  background: #1c2128;
+  color: #8b949e;
+  padding: 0.4rem 0.5rem;
+  font-size: 0.7rem;
+  border-right: 1px solid var(--border);
+}
+
+.matrix-container td {
+  padding: 0.3rem;
+  border-right: 1px solid #21262d;
+  border-bottom: 1px solid #21262d;
+}
+
+.matrix-container .self-cell {
+  background: #21262d;
+}
+
+/* Custom checkbox — teal/green like Dante routing */
+.matrix-container input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  width: 22px;
+  height: 22px;
+  border: 2px solid #30363d;
+  border-radius: 3px;
+  background: #0d1117;
+  cursor: pointer;
+  transition: all 0.15s;
+  display: block;
+  margin: 0 auto;
+}
+
+.matrix-container input[type="checkbox"]:hover {
+  border-color: #00b8a9;
+}
+
+.matrix-container input[type="checkbox"]:checked {
+  background: #00b8a9;
+  border-color: #00b8a9;
+  box-shadow: inset 0 0 0 2px #0d1117;
+}
+
+/* Group columns slightly different background */
+.matrix-container td[style*="background:#f8faff"] {
+  background: #1a1f2b !important;
+}
+.matrix-container th[style*="background:#e8f0fe"] {
+  background: #1a2332 !important;
+  color: #58a6ff !important;
+}
+
+/* ========== Forms / Inputs ========== */
+.form-group input,
+.form-group select {
+  background: #0d1117;
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.form-group input::placeholder {
+  color: #484f58;
+}
+
+.form-group input:focus,
+.form-group select:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px rgba(56,139,253,0.2);
+}
+
+.form-group label {
+  color: var(--text-light);
+}
+
+/* ========== Select (filter) ========== */
+#permGroupFilter {
+  background: #0d1117 !important;
+  color: var(--text) !important;
+  border-color: var(--border) !important;
+}
+
+/* ========== Buttons ========== */
+.btn-primary {
+  background: var(--primary);
+  color: #fff;
+}
+
+.btn-primary:hover {
+  background: var(--primary-hover);
+}
+
+.btn-secondary {
+  background: #21262d;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.btn-secondary:hover {
+  background: #30363d;
+}
+
+.btn-danger {
+  background: #21262d;
+  color: var(--danger);
+  border: 1px solid var(--border);
+}
+
+.btn-danger:hover {
+  background: var(--danger);
+  color: #fff;
+}
+
+/* ========== Cards (Groups) ========== */
+.group-card {
+  background: var(--card-bg);
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+  border: 1px solid var(--border);
+}
+
+.group-card .group-info h3 {
+  color: var(--text);
+}
+
+.group-card .group-info .members {
+  color: var(--text-light);
+}
+
+/* ========== Modal ========== */
+.modal-content {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  box-shadow: 0 8px 30px rgba(0,0,0,0.5);
+}
+
+.modal-content h3 {
+  color: var(--text);
+}
+
+.checkbox-list {
+  background: #0d1117;
+  border-color: var(--border);
+}
+
+.checkbox-list label {
+  color: var(--text);
+}
+
+/* ========== Alerts ========== */
+.alert-error {
+  background: #2d1b1b;
+  color: var(--danger);
+  border-color: #4d2020;
+}
+
+.alert-success {
+  background: #1b2d1b;
+  color: var(--success);
+  border-color: #204d20;
+}
+
+/* ========== Scrollbar ========== */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+
+::-webkit-scrollbar-thumb {
+  background: #30363d;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #484f58;
+}

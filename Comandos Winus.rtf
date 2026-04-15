@@ -1,0 +1,21 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2868
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;}
+{\*\expandedcolortbl;;}
+\paperw11900\paperh16840\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 /opt/Cambiar IP server por defecto:\
+	sed -i "s|huin.tv:8443|192.168.0.15:8443|g" flutter_app/lib/platform/platform_utils_native.dart\
+\
+Build apk y cargarlo:\
+	cd /opt/winus-intercom/flutter_app && flutter build apk --release 2>&1 | tail -2 && cp build/app/outputs/flutter-apk/app-release.apk /opt/winus-intercom/nginx/downloads/intercom.apk\
+\
+Crear .deb y .tar\
+	cd /opt/winus-intercom && bash create-deb.sh 2>&1 | tail -5 && bash package.sh 2>&1 | tail -5\
+ \
+Crear la .ipa\
+	cd flutter_app\
+	flutter clean && flutter pub get && flutter build ipa --release\
+\
+}

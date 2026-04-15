@@ -1,0 +1,45 @@
+# Build artifacts
+flutter_app/build/
+flutter_app/.dart_tool/
+flutter_app/.flutter-plugins
+flutter_app/.flutter-plugins-dependencies
+flutter_app/android/.gradle/
+flutter_app/android/app/build/
+flutter_app/android/local.properties
+
+# Packages
+*.tar.gz
+*.deb
+
+# Database
+backend/db/*.db
+backend/db/*.db-shm
+backend/db/*.db-wal
+
+# Environment (secrets)
+.env
+
+# SSL certificates
+nginx/certs/*.pem
+
+# APK downloads
+nginx/downloads/*.apk
+
+# Node modules
+node_modules/
+backend/node_modules/
+
+# Python
+__pycache__/
+*.pyc
+tie-line-bridge/.venv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# Logs
+*.log
+tie-line-bridge/opus.dll

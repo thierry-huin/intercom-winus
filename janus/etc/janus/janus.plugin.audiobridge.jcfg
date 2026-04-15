@@ -1,0 +1,3 @@
+general: {
+    # No predefined rooms - created dynamically via API
+}

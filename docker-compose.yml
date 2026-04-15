@@ -1,0 +1,54 @@
+services:
+  backend:
+    build: ./backend
+    container_name: intercom-backend
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      - JWT_SECRET=${JWT_SECRET:-change_this_jwt_secret}
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - MEDIASOUP_ANNOUNCED_IPS=${MEDIASOUP_ANNOUNCED_IPS:-}
+      - TURN_PORT=3478
+      - TURN_USER=${TURN_USER:-intercom}
+      - TURN_PASSWORD=${TURN_PASSWORD:-intercom2024}
+    volumes:
+      - ./backend/db:/app/db
+
+  nginx:
+    build: ./nginx
+    container_name: intercom-nginx
+    restart: unless-stopped
+    networks:
+      - intercom-net
+    ports:
+      - "${HTTP_PORT:-8080}:80"
+      - "${HTTPS_PORT:-8443}:443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - backend
+    volumes:
+      - ./flutter_app/build/web:/usr/share/nginx/html:ro
+      - ./nginx/certs:/etc/nginx/certs:ro
+      - ./nginx/downloads:/usr/share/nginx/downloads:ro
+
+  coturn:
+    image: coturn/coturn:latest
+    container_name: intercom-coturn
+    restart: unless-stopped
+    network_mode: host
+    volumes:
+      - ./coturn/turnserver.conf:/etc/coturn/turnserver.conf:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        RESOLVED_IP=$$(getent hosts ${EXTERNAL_IP:-huin.tv} | awk '{print $$1}' | head -1)
+        echo "TURN external-ip: $$RESOLVED_IP / ${LOCAL_IP}"
+        exec turnserver -c /etc/coturn/turnserver.conf \
+          --user=${TURN_USER:-intercom}:${TURN_PASSWORD:-intercom2024} \
+          --external-ip=$$RESOLVED_IP/${LOCAL_IP}
+
+networks:
+  intercom-net:
+    driver: bridge

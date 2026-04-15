@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Intercom - Gestión</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+    background: #0f172a;
+    color: #e2e8f0;
+    min-height: 100vh;
+  }
+  .header {
+    background: linear-gradient(135deg, #1e3a5f, #1e40af);
+    padding: 20px 24px;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+  }
+  .header-icon {
+    width: 48px; height: 48px;
+    background: rgba(255,255,255,0.15);
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 24px;
+  }
+  .header h1 { font-size: 22px; font-weight: 600; }
+  .header .subtitle { font-size: 13px; color: #93c5fd; }
+
+  .container { max-width: 900px; margin: 0 auto; padding: 24px 16px; }
+
+  /* Status cards */
+  .status-bar {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .status-card {
+    background: #1e293b;
+    border-radius: 12px;
+    padding: 16px;
+    border: 1px solid #334155;
+  }
+  .status-card .label { font-size: 11px; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.5px; }
+  .status-card .value { font-size: 18px; font-weight: 600; margin-top: 4px; }
+
+  /* Container status */
+  .containers-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .ct-card {
+    background: #1e293b;
+    border-radius: 10px;
+    padding: 14px 16px;
+    border: 1px solid #334155;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .ct-dot {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .ct-dot.running { background: #22c55e; box-shadow: 0 0 8px #22c55e88; }
+  .ct-dot.stopped { background: #ef4444; box-shadow: 0 0 8px #ef444488; }
+  .ct-name { font-weight: 600; font-size: 14px; }
+  .ct-status { font-size: 12px; color: #94a3b8; }
+
+  /* Action buttons */
+  .actions {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: 10px;
+    margin-bottom: 24px;
+  }
+  .btn {
+    padding: 14px 20px;
+    border: none;
+    border-radius: 10px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    transition: all 0.2s;
+    color: white;
+  }
+  .btn:hover { transform: translateY(-1px); box-shadow: 0 4px 15px rgba(0,0,0,0.3); }
+  .btn:active { transform: translateY(0); }
+  .btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+  .btn-start   { background: #16a34a; }
+  .btn-stop    { background: #dc2626; }
+  .btn-restart { background: #2563eb; }
+  .btn-rebuild { background: #9333ea; }
+  .btn-logs    { background: #0891b2; }
+  .btn-refresh { background: #475569; }
+
+  .btn .icon { font-size: 18px; }
+
+  /* Output console */
+  .console-section {
+    background: #1e293b;
+    border-radius: 12px;
+    border: 1px solid #334155;
+    overflow: hidden;
+  }
+  .console-header {
+    padding: 12px 16px;
+    background: #0f172a;
+    border-bottom: 1px solid #334155;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  .console-header span { font-size: 13px; font-weight: 600; color: #94a3b8; }
+  .console-body {
+    padding: 16px;
+    max-height: 400px;
+    overflow-y: auto;
+    font-family: 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: pre-wrap;
+    color: #a5f3fc;
+  }
+  .console-body.error { color: #fca5a5; }
+  .console-body.success { color: #86efac; }
+
+  /* Loading spinner */
+  .spinner {
+    display: inline-block;
+    width: 16px; height: 16px;
+    border: 2px solid rgba(255,255,255,0.3);
+    border-top-color: white;
+    border-radius: 50%;
+    animation: spin 0.6s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+
+  /* Open intercom link */
+  .open-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    color: #60a5fa;
+    text-decoration: none;
+    font-size: 13px;
+    padding: 6px 12px;
+    border-radius: 6px;
+    transition: background 0.2s;
+  }
+  .open-link:hover { background: rgba(96,165,250,0.1); }
+
+  @media (max-width: 500px) {
+    .actions { grid-template-columns: repeat(2, 1fr); }
+    .header h1 { font-size: 18px; }
+  }
+</style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-icon">🎙️</div>
+  <div>
+    <h1>Intercom</h1>
+    <div class="subtitle">Panel de Gestión</div>
+  </div>
+  <div style="flex:1"></div>
+  <a id="openLink" href="#" target="_blank" class="open-link">
+    Abrir Intercom ↗
+  </a>
+</div>
+
+<div class="container">
+  <!-- Status bar -->
+  <div class="status-bar">
+    <div class="status-card">
+      <div class="label">IP del servidor</div>
+      <div class="value" id="serverIp">—</div>
+    </div>
+    <div class="status-card">
+      <div class="label">Uptime sistema</div>
+      <div class="value" id="uptime">—</div>
+    </div>
+    <div class="status-card">
+      <div class="label">Servicios</div>
+      <div class="value" id="serviceCount">—</div>
+    </div>
+  </div>
+
+  <!-- Container status -->
+  <div class="containers-grid" id="containersGrid"></div>
+
+  <!-- Action buttons -->
+  <div class="actions">
+    <button class="btn btn-start" onclick="doAction('start')">
+      <span class="icon">▶</span> Arrancar
+    </button>
+    <button class="btn btn-stop" onclick="doAction('stop')">
+      <span class="icon">⏹</span> Parar
+    </button>
+    <button class="btn btn-restart" onclick="doAction('restart')">
+      <span class="icon">🔄</span> Reiniciar
+    </button>
+    <button class="btn btn-rebuild" onclick="doAction('rebuild')">
+      <span class="icon">🔨</span> Reconstruir
+    </button>
+    <button class="btn btn-logs" onclick="loadLogs()">
+      <span class="icon">📋</span> Logs
+    </button>
+    <button class="btn btn-refresh" onclick="refreshStatus()">
+      <span class="icon">↻</span> Actualizar
+    </button>
+  </div>
+
+  <!-- Console output -->
+  <div class="console-section">
+    <div class="console-header">
+      <span>Consola</span>
+      <span id="consoleStatus"></span>
+    </div>
+    <div class="console-body" id="console">Listo. Selecciona una acción.</div>
+  </div>
+</div>
+
+<script>
+const consoleEl = document.getElementById('console');
+const consoleStatus = document.getElementById('consoleStatus');
+let busy = false;
+
+function setConsole(text, type = '') {
+  consoleEl.textContent = text;
+  consoleEl.className = 'console-body' + (type ? ' ' + type : '');
+  consoleEl.scrollTop = consoleEl.scrollHeight;
+}
+
+function setBusy(isBusy, label = '') {
+  busy = isBusy;
+  document.querySelectorAll('.btn').forEach(b => b.disabled = isBusy);
+  consoleStatus.innerHTML = isBusy ? `<span class="spinner"></span> ${label}` : '';
+}
+
+async function doAction(action) {
+  if (busy) return;
+
+  const labels = {
+    start: 'Arrancando...', stop: 'Parando...', restart: 'Reiniciando...',
+    rebuild: 'Reconstruyendo...', ip: 'Detectando IP...'
+  };
+  setBusy(true, labels[action] || 'Ejecutando...');
+  setConsole(`Ejecutando: ${action}...`);
+
+  try {
+    const resp = await fetch('/api/action', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action })
+    });
+    const data = await resp.json();
+    setConsole(data.output || '(sin salida)', data.ok ? 'success' : 'error');
+  } catch (err) {
+    setConsole('Error de conexión: ' + err.message, 'error');
+  }
+
+  setBusy(false);
+  // Refresh status after action
+  setTimeout(refreshStatus, 2000);
+}
+
+async function loadLogs() {
+  if (busy) return;
+  setBusy(true, 'Cargando logs...');
+  setConsole('Obteniendo logs...');
+
+  try {
+    const resp = await fetch('/api/logs');
+    const data = await resp.json();
+    setConsole(data.output || '(sin logs)', data.ok ? '' : 'error');
+  } catch (err) {
+    setConsole('Error: ' + err.message, 'error');
+  }
+  setBusy(false);
+}
+
+async function refreshStatus() {
+  try {
+    const resp = await fetch('/api/status');
+    const data = await resp.json();
+
+    // IP
+    document.getElementById('serverIp').textContent = data.ip || '?';
+    document.getElementById('uptime').textContent = data.uptime || '?';
+
+    // Update open link
+    const link = document.getElementById('openLink');
+    if (data.ip) {
+      link.href = `https://${data.ip}:8443`;
+    }
+
+    // Containers
+    const grid = document.getElementById('containersGrid');
+    const containers = data.containers || [];
+    const running = containers.filter(c => (c.State || '').toLowerCase() === 'running').length;
+    document.getElementById('serviceCount').textContent = `${running}/${containers.length}`;
+
+    if (containers.length === 0) {
+      grid.innerHTML = '<div class="ct-card"><div class="ct-dot stopped"></div><div><div class="ct-name">Sin contenedores</div><div class="ct-status">Ejecuta "Arrancar"</div></div></div>';
+    } else {
+      grid.innerHTML = containers.map(c => {
+        const isRunning = (c.State || '').toLowerCase() === 'running';
+        const name = c.Name || c.Service || '?';
+        const status = c.Status || c.State || '?';
+        return `<div class="ct-card">
+          <div class="ct-dot ${isRunning ? 'running' : 'stopped'}"></div>
+          <div>
+            <div class="ct-name">${name}</div>
+            <div class="ct-status">${status}</div>
+          </div>
+        </div>`;
+      }).join('');
+    }
+  } catch (err) {
+    console.error('Status error:', err);
+  }
+}
+
+// Auto-refresh every 30s
+refreshStatus();
+setInterval(refreshStatus, 30000);
+</script>
+</body>
+</html>

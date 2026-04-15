@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Intercom - Red</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, sans-serif; background: #1a1a2e; color: #eee; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+  .card { background: #16213e; border-radius: 16px; padding: 32px; width: 90%; max-width: 420px; box-shadow: 0 8px 32px rgba(0,0,0,0.3); }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  .sub { color: #888; font-size: 13px; margin-bottom: 24px; }
+  .info { background: #0f3460; border-radius: 10px; padding: 16px; margin-bottom: 20px; }
+  .info-row { display: flex; justify-content: space-between; padding: 6px 0; font-size: 14px; }
+  .info-row .label { color: #888; }
+  .info-row .value { font-family: monospace; color: #e94560; font-weight: bold; }
+  .btn { width: 100%; padding: 14px; border: none; border-radius: 10px; font-size: 16px; font-weight: 600; cursor: pointer; margin-bottom: 12px; transition: all 0.2s; }
+  .btn-primary { background: #e94560; color: white; }
+  .btn-primary:hover { background: #c73650; }
+  .btn-primary:disabled { background: #555; cursor: wait; }
+  .btn-secondary { background: #0f3460; color: #ccc; border: 1px solid #333; }
+  .btn-secondary:hover { background: #1a4a7a; }
+  .console { background: #0a0a1a; border-radius: 10px; padding: 12px; margin-top: 16px; font-family: monospace; font-size: 12px; max-height: 200px; overflow-y: auto; display: none; white-space: pre-wrap; word-break: break-all; }
+  .console.show { display: block; }
+  .status { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 8px; }
+  .status.ok { background: #4ade80; }
+  .status.err { background: #e94560; }
+  .status.wait { background: #fbbf24; animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: 0.4; } }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🎙️ Intercom - Red</h1>
+  <p class="sub">Gestión de red sin línea de comandos</p>
+
+  <div class="info">
+    <div class="info-row">
+      <span class="label">IP actual servidor</span>
+      <span class="value" id="currentIp">Cargando...</span>
+    </div>
+    <div class="info-row">
+      <span class="label">IP mediasoup</span>
+      <span class="value" id="msIp">Cargando...</span>
+    </div>
+    <div class="info-row">
+      <span class="label">Estado</span>
+      <span id="status"><span class="status wait"></span>Verificando...</span>
+    </div>
+  </div>
+
+  <button class="btn btn-primary" id="btnRestart" onclick="doRestart()">
+    🔄 Reiniciar con nueva IP
+  </button>
+  <button class="btn btn-secondary" onclick="doRefresh()">
+    📡 Refrescar estado
+  </button>
+
+  <div class="console" id="console"></div>
+</div>
+
+<script>
+const BASE = window.location.origin;
+let AUTH = '';
+
+function doLogin() {
+  const creds = prompt('Usuario:Contraseña admin', 'admin:admin');
+  if (creds) AUTH = 'Basic ' + btoa(creds);
+}
+doLogin();
+
+async function api(endpoint) {
+  const r = await fetch(BASE + endpoint, { headers: { 'Authorization': AUTH } });
+  if (r.status === 401) { doLogin(); return api(endpoint); }
+  return r.json();
+}
+
+async function doRefresh() {
+  try {
+    const data = await api('/api/status');
+    document.getElementById('currentIp').textContent = data.server_ip || '?';
+    document.getElementById('msIp').textContent = data.mediasoup_ip || '?';
+    const match = data.server_ip === data.mediasoup_ip;
+    document.getElementById('status').innerHTML = match
+      ? '<span class="status ok"></span>Correcto'
+      : '<span class="status err"></span>IP no coincide - Reiniciar';
+  } catch(e) {
+    document.getElementById('status').innerHTML = '<span class="status err"></span>Error: ' + e.message;
+  }
+}
+
+async function doRestart() {
+  const btn = document.getElementById('btnRestart');
+  const con = document.getElementById('console');
+  btn.disabled = true;
+  btn.textContent = '⏳ Reiniciando...';
+  con.classList.add('show');
+  con.textContent = '> Reiniciando contenedores...\n';
+
+  try {
+    const r = await fetch(BASE + '/api/action', {
+      method: 'POST',
+      headers: { 'Authorization': AUTH, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'restart' })
+    });
+    const data = await r.json();
+    con.textContent += data.output || JSON.stringify(data);
+    con.textContent += '\n> Listo!\n';
+    con.scrollTop = con.scrollHeight;
+    setTimeout(doRefresh, 3000);
+  } catch(e) {
+    con.textContent += '> Error: ' + e.message + '\n';
+  }
+  btn.disabled = false;
+  btn.textContent = '🔄 Reiniciar con nueva IP';
+}
+
+doRefresh();
+</script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+{
+  "name": "intercom-backend",
+  "version": "2.0.0",
+  "description": "Intercom backend - mediasoup SFU + API + signaling",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.0.0",
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "express": "^4.21.0",
+    "jsonwebtoken": "^9.0.2",
+    "mediasoup": "^3.14.0",
+    "@parse/node-apn": "^6.0.1",
+    "@discordjs/opus": "^0.9.0",
+    "ws": "^8.18.0"
+  }
+}

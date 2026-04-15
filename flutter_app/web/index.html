@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="Winus Intercom - Walkie Talkie">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+
+  <!-- PWA / Mobile meta tags -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Winus Intercom">
+  <meta name="theme-color" content="#1565C0">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>Winus Intercom</title>
+  <link rel="manifest" href="manifest.json">
+
+  <style>
+    #loading-indicator {
+      position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      background: #0d2137; color: #ccc; font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+      z-index: 9999; transition: opacity 0.3s;
+    }
+    #loading-indicator.hidden { opacity: 0; pointer-events: none; }
+    .loader-spinner {
+      width: 40px; height: 40px; border: 3px solid #334; border-top-color: #4a9eff;
+      border-radius: 50%; animation: spin 0.8s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    #loading-status { margin-top: 16px; font-size: 14px; }
+    #loading-diagnostic { margin-top: 12px; font-size: 12px; color: #f80; display: none; max-width: 340px; text-align: center; line-height: 1.5; }
+  </style>
+</head>
+<body>
+  <div id="loading-indicator">
+    <div class="loader-spinner"></div>
+    <div id="loading-status">Loading Winus Intercom…</div>
+    <div id="loading-diagnostic"></div>
+  </div>
+  <script>
+    (function() {
+      var diag = document.getElementById('loading-diagnostic');
+      var status = document.getElementById('loading-status');
+      function showDiag(msg) { if (diag) { diag.style.display = 'block'; diag.innerHTML = msg; } }
+      function setStatus(msg) { if (status) { status.textContent = msg; } }
+
+      // Catch all uncaught errors during loading
+      window.addEventListener('error', function(e) {
+        showDiag('Error: ' + (e.message || e) + (e.filename ? '<br>File: ' + e.filename : ''));
+      });
+      window.addEventListener('unhandledrejection', function(e) {
+        var msg = e.reason ? (e.reason.message || String(e.reason)) : 'Unknown error';
+        showDiag('Load failed: ' + msg);
+      });
+
+      // Proactive resource check (detects cert/network issues before Flutter tries)
+      setTimeout(function() {
+        setStatus('Checking resources\u2026');
+        var checks = [
+          fetch('main.dart.js', {method:'HEAD'}).then(function(r) { return r.ok ? null : 'main.dart.js: HTTP ' + r.status; }),
+          fetch('canvaskit/canvaskit.wasm', {method:'HEAD'}).then(function(r) { return r.ok ? null : 'canvaskit.wasm: HTTP ' + r.status; })
+        ];
+        Promise.all(checks.map(function(p) { return p.catch(function(e) { return 'Network error: ' + e.message; }); })).then(function(results) {
+          var errors = results.filter(function(r) { return r !== null; });
+          if (errors.length > 0) {
+            showDiag('Cannot load app resources:<br>' + errors.join('<br>') + '<br><br>If using Safari, install the SSL certificate:<br>1. Open /cert.pem in Safari<br>2. Install the profile in Settings<br>3. Trust it in Settings > General > About > Certificate Trust');
+          } else {
+            setStatus('Loading Winus Intercom\u2026');
+          }
+        });
+      }, 500);
+
+      var t1 = setTimeout(function() { showDiag('Loading is taking longer than expected. Check your network connection.'); }, 12000);
+      var t2 = setTimeout(function() {
+        showDiag('Could not load the app.<br>Possible causes:<br>\u2022 Untrusted SSL certificate (install cert on device)<br>\u2022 Server unreachable<br>\u2022 Try reloading the page');
+      }, 25000);
+
+      // Hide indicator once Flutter renders
+      var obs = new MutationObserver(function() {
+        if (document.querySelector('flt-glass-pane, flutter-view')) {
+          clearTimeout(t1); clearTimeout(t2);
+          var el = document.getElementById('loading-indicator');
+          if (el) { el.classList.add('hidden'); setTimeout(function() { el.remove(); }, 500); }
+          obs.disconnect();
+        }
+      });
+      obs.observe(document.body, { childList: true, subtree: true });
+    })();
+  </script>
+  <!--
+    You can customize the "flutter_bootstrap.js" script.
+    This is useful to provide a custom configuration to the Flutter loader
+    or to give the user feedback during the initialization process.
+
+    For more details:
+    * https://docs.flutter.dev/platform-integration/web/initialization
+  -->
+  <script>
+    // Register service worker for PWA installability (Chrome/Edge only)
+    // Safari has issues with SW + self-signed certs + WASM loading
+    if ('serviceWorker' in navigator) {
+      var isSafari = /^Apple/.test(navigator.vendor);
+      if (!isSafari) {
+        navigator.serviceWorker.register('sw.js').catch(function(e) {
+          console.warn('SW registration failed:', e);
+        });
+      } else {
+        navigator.serviceWorker.getRegistrations().then(function(regs) {
+          regs.forEach(function(r) { r.unregister(); });
+        });
+      }
+    }
+
+    // Wake Lock API - keeps screen on
+    var _wakeLock = null;
+    async function requestWakeLock() {
+      try {
+        if ('wakeLock' in navigator) {
+          _wakeLock = await navigator.wakeLock.request('screen');
+          console.log('[WakeLock] Screen lock acquired');
+          // Re-acquire on visibility change (Android suspends on tab switch)
+          document.addEventListener('visibilitychange', function() {
+            if (document.visibilityState === 'visible' && !_wakeLock) {
+              navigator.wakeLock.request('screen').then(function(wl) {
+                _wakeLock = wl;
+                console.log('[WakeLock] Re-acquired');
+              }).catch(function(){});
+            }
+          });
+          _wakeLock.addEventListener('release', function() {
+            _wakeLock = null;
+            console.log('[WakeLock] Released');
+          });
+        }
+      } catch (e) {
+        console.warn('[WakeLock] Not available:', e.message);
+      }
+    }
+    function releaseWakeLock() {
+      if (_wakeLock) { _wakeLock.release(); _wakeLock = null; }
+    }
+
+    // Vibration for incoming audio
+    function vibrateIncoming() {
+      if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    }
+    var _savedSinkId = null;
+    function setAudioSinkId(deviceId) {
+      _savedSinkId = deviceId;
+      console.log('[Audio] setSinkId saved: ' + deviceId);
+      _applySinkIdToAll(deviceId);
+    }
+    function _applySinkIdToAll(deviceId) {
+      document.querySelectorAll('audio, video').forEach(function(el) {
+        if (el.setSinkId && el.srcObject) {
+          el.setSinkId(deviceId).catch(function(e) {
+            console.warn('[Audio] setSinkId failed:', e.message);
+          });
+        }
+      });
+    }
+    // GainNode map for iOS volume control (el.volume is read-only on iOS)
+    var _gainNodes = {}; // key -> { audioCtx, src, gain, stream, el }
+
+    function ensureRemoteAudioPlaying() {
+      var count = 0;
+      // Resume all GainNode AudioContexts (may be suspended on iOS)
+      for (var k in _gainNodes) {
+        try { _gainNodes[k].audioCtx.resume(); } catch(_) {}
+      }
+      // Clean up GainNodes for streams no longer in DOM
+      _cleanupStaleGainNodes();
+
+      document.querySelectorAll('audio, video').forEach(function(el) {
+        if (!el.srcObject) return;
+        if (!el._gainControlled) { // Don't un-mute elements managed by GainNode
+          el.muted = false;
+          el.autoplay = true;
+          if (el.paused) el.play().catch(function(e) { console.warn('[Audio] play failed:', e.message); });
+        }
+        count++;
+      });
+      if (_savedSinkId) _applySinkIdToAll(_savedSinkId);
+      _applyStreamVolumes();
+      if (count > 0) console.log('[Audio] ensureRemoteAudioPlaying: ' + count + ' elements');
+    }
+
+    // Per-stream volume control (0.0 to 1.0)
+    var _streamVolumes = {}; // streamId/trackId -> volume
+
+    function setStreamVolume(streamId, volume) {
+      _streamVolumes[streamId] = Math.max(0, Math.min(1, volume));
+      _applyStreamVolumes();
+      return 1;
+    }
+
+    function _findVolForElement(el) {
+      var vol = _streamVolumes[el.srcObject.id];
+      var key = el.srcObject.id;
+      if (vol === undefined) {
+        var tracks = el.srcObject.getAudioTracks();
+        for (var i = 0; i < tracks.length; i++) {
+          if (_streamVolumes[tracks[i].id] !== undefined) {
+            vol = _streamVolumes[tracks[i].id];
+            key = tracks[i].id;
+            break;
+          }
+        }
+      }
+      return vol !== undefined ? { vol: vol, key: key } : null;
+    }
+
+    function _applyStreamVolumes() {
+      document.querySelectorAll('audio, video').forEach(function(el) {
+        if (!el.srcObject) return;
+        var match = _findVolForElement(el);
+        if (!match) return;
+        var vol = match.vol, key = match.key;
+
+        // Try el.volume (works on Android/desktop)
+        el.volume = vol;
+
+        // GainNode for iOS where el.volume is read-only
+        if (vol < 1.0) {
+          _setupGainNode(el, key, vol);
+        } else {
+          _removeGainNode(key);
+        }
+      });
+    }
+
+    function _setupGainNode(el, key, volume) {
+      var existing = _gainNodes[key];
+      if (existing && existing.stream === el.srcObject) {
+        existing.gain.gain.value = volume;
+        return;
+      }
+      _removeGainNode(key);
+      try {
+        var AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        var audioCtx = new AudioCtx();
+        audioCtx.resume().catch(function(){});
+        var src = audioCtx.createMediaStreamSource(el.srcObject);
+        var gain = audioCtx.createGain();
+        gain.gain.value = volume;
+        src.connect(gain);
+        gain.connect(audioCtx.destination);
+        el.muted = true;
+        el._gainControlled = true;
+        _gainNodes[key] = { audioCtx: audioCtx, src: src, gain: gain, stream: el.srcObject, el: el };
+        console.log('[Audio] GainNode key=' + key + ' vol=' + volume);
+      } catch(e) {
+        console.warn('[Audio] GainNode failed:', e.message);
+      }
+    }
+
+    function _removeGainNode(key) {
+      var n = _gainNodes[key];
+      if (!n) return;
+      try { n.src.disconnect(); } catch(_) {}
+      try { n.gain.disconnect(); } catch(_) {}
+      try { n.audioCtx.close(); } catch(_) {}
+      if (n.el) { n.el.muted = false; n.el._gainControlled = false; }
+      delete _gainNodes[key];
+    }
+
+    function _cleanupStaleGainNodes() {
+      var activeStreams = new Set();
+      document.querySelectorAll('audio, video').forEach(function(el) {
+        if (el.srcObject) {
+          activeStreams.add(el.srcObject.id);
+          el.srcObject.getAudioTracks().forEach(function(t) { activeStreams.add(t.id); });
+        }
+      });
+      for (var k in _gainNodes) {
+        if (!activeStreams.has(k)) _removeGainNode(k);
+      }
+    }
+
+    // Diagnostic: call from browser console to check audio state
+    function debugAudioElements() {
+      var info = [];
+      document.querySelectorAll('audio, video').forEach(function(el, i) {
+        info.push({
+          index: i,
+          tag: el.tagName,
+          hasSrc: !!el.srcObject,
+          muted: el.muted,
+          paused: el.paused,
+          volume: el.volume,
+          readyState: el.readyState,
+          tracks: el.srcObject ? el.srcObject.getAudioTracks().map(function(t) {
+            return { id: t.id, enabled: t.enabled, muted: t.muted, readyState: t.readyState };
+          }) : []
+        });
+      });
+      console.table(info);
+      return info;
+    }
+    function enumerateAudioDevices() {
+      return navigator.mediaDevices.enumerateDevices().then(function(devices) {
+        var result = {inputs: [], outputs: []};
+        devices.forEach(function(d) {
+          var label = d.label || ('Device ' + (d.deviceId || '').substring(0, 8));
+          if (d.kind === 'audioinput') {
+            result.inputs.push({deviceId: d.deviceId, label: label});
+          } else if (d.kind === 'audiooutput') {
+            result.outputs.push({deviceId: d.deviceId, label: label});
+          }
+        });
+        return JSON.stringify(result);
+      });
+    }
+
+    // ======================== Multi-channel I/O (Tie Lines) ========================
+    // Captures a multi-channel device (e.g. Blackhole 16), splits into mono streams
+    // for input, and merges consumer outputs back into multi-channel for output.
+    var _mc = null;  // multi-channel state
+
+    function initMultiChannel(inputDeviceId, outputDeviceId, numChannels) {
+      destroyMultiChannel();
+      console.log('[MC] initMultiChannel: input=' + inputDeviceId + ' output=' + outputDeviceId + ' ch=' + numChannels);
+      var gum = _origGetUserMedia || navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+      return gum({
+        audio: {
+          deviceId: inputDeviceId ? { exact: inputDeviceId } : undefined,
+          channelCount: numChannels,
+          echoCancellation: false,
+          noiseSuppression: false,
+          autoGainControl: false
+        },
+        video: false
+      }).catch(function(e) {
+        console.error('[MC] getUserMedia failed:', e.name, e.message, '- retrying without channelCount');
+        return gum({
+          audio: { deviceId: inputDeviceId ? { exact: inputDeviceId } : undefined,
+                   echoCancellation: false, noiseSuppression: false, autoGainControl: false },
+          video: false
+        });
+      }).then(function(rawStream) {
+        var track = rawStream.getAudioTracks()[0];
+        var settings = track.getSettings();
+        var actualChannels = settings.channelCount || 2;
+        console.log('[MC] Captured: ' + actualChannels + ' ch (requested ' + numChannels + '), sr=' + settings.sampleRate);
+
+        var channelStreams = [];
+        var inputRes = { type: 'none' };
+
+        // ---- Strategy 1: Insertable Streams ----
+        // ALWAYS try this first. Chrome's track.getSettings().channelCount may
+        // report 2 even if the device has 16 channels. The AudioData frames
+        // from MediaStreamTrackProcessor reveal the REAL channel count.
+        var canInsertable = (typeof MediaStreamTrackProcessor !== 'undefined') &&
+                            (typeof MediaStreamTrackGenerator !== 'undefined') &&
+                            (typeof AudioData !== 'undefined');
+
+        if (canInsertable) {
+          try {
+            console.log('[MC] Trying Insertable Streams...');
+            var processor = new MediaStreamTrackProcessor({ track: track });
+            var reader = processor.readable.getReader();
+            var generators = [];
+            var writers = [];
+            for (var i = 0; i < numChannels; i++) {
+              var gen = new MediaStreamTrackGenerator({ kind: 'audio' });
+              generators.push(gen);
+              writers.push(gen.writable.getWriter());
+              channelStreams.push(new MediaStream([gen]));
+            }
+            inputRes = { type: 'insertable', processor: processor, reader: reader,
+                         generators: generators, writers: writers, active: true };
+
+            // Async frame-splitting loop
+            (async function() {
+              var logged = false;
+              try {
+                while (inputRes.active) {
+                  var result = await reader.read();
+                  if (result.done) break;
+                  var frame = result.value;
+                  var nf = frame.numberOfFrames;
+                  var sr = frame.sampleRate;
+                  var ts = frame.timestamp;
+                  var fch = frame.numberOfChannels;
+                  var fmt = frame.format;
+                  if (!logged) {
+                    console.log('[MC] First AudioData: ' + fch + 'ch, ' + nf + ' frames, format=' + fmt + ', sr=' + sr);
+                    logged = true;
+                  }
+                  var useCh = Math.min(numChannels, fch);
+                  // Extract each channel depending on format
+                  if (fmt && fmt.indexOf('planar') >= 0) {
+                    // Planar: each plane = one channel
+                    for (var c = 0; c < useCh; c++) {
+                      try {
+                        var buf = new Float32Array(nf);
+                        frame.copyTo(buf, { planeIndex: c });
+                        writers[c].write(new AudioData({
+                          format: 'f32-planar', sampleRate: sr,
+                          numberOfFrames: nf, numberOfChannels: 1,
+                          timestamp: ts, data: buf
+                        }));
+                      } catch(ex) {}
+                    }
+                  } else {
+                    // Interleaved: deinterleave manually
+                    var allSize = nf * fch;
+                    var all = new Float32Array(allSize);
+                    try { frame.copyTo(all, { format: 'f32' }); } catch(ex) {
+                      try { frame.copyTo(all); } catch(ex2) {}
+                    }
+                    for (var c = 0; c < useCh; c++) {
+                      var mono = new Float32Array(nf);
+                      for (var s = 0; s < nf; s++) mono[s] = all[s * fch + c];
+                      try {
+                        writers[c].write(new AudioData({
+                          format: 'f32-planar', sampleRate: sr,
+                          numberOfFrames: nf, numberOfChannels: 1,
+                          timestamp: ts, data: mono
+                        }));
+                      } catch(ex) {}
+                    }
+                  }
+                  frame.close();
+                }
+              } catch(e) {
+                if (inputRes.active) console.warn('[MC] Frame loop ended:', e.message);
+              }
+            })();
+          } catch(e) {
+            console.warn('[MC] Insertable Streams init failed:', e.message, '- falling back');
+            channelStreams = [];
+            inputRes = { type: 'none' };
+          }
+        }
+
+        // ---- Strategy 2: Web Audio ChannelSplitter (fallback) ----
+        if (channelStreams.length === 0) {
+          var splitCount = Math.min(numChannels, actualChannels);
+          console.log('[MC] Using ChannelSplitter for ' + splitCount + ' channels');
+          var inputCtx = new AudioContext();
+          if (inputCtx.destination.maxChannelCount >= splitCount)
+            inputCtx.destination.channelCount = splitCount;
+          var source = inputCtx.createMediaStreamSource(rawStream);
+          var pass = inputCtx.createGain();
+          pass.gain.value = 1;
+          pass.channelCount = splitCount;
+          pass.channelCountMode = 'explicit';
+          pass.channelInterpretation = 'discrete';
+          source.connect(pass);
+          var splitter = inputCtx.createChannelSplitter(splitCount);
+          pass.connect(splitter);
+          for (var i = 0; i < numChannels; i++) {
+            var dest = inputCtx.createMediaStreamDestination();
+            if (i < splitCount) splitter.connect(dest, i, 0);
+            channelStreams.push(dest.stream);
+          }
+          inputRes = { type: 'webaudio', inputCtx: inputCtx, splitter: splitter };
+        }
+
+        // ---- OUTPUT MERGER ----
+        var outputCtx = new AudioContext({ sampleRate: settings.sampleRate || 48000 });
+        if (outputCtx.destination.maxChannelCount >= numChannels)
+          outputCtx.destination.channelCount = numChannels;
+        var setSinkPromise = Promise.resolve();
+        if (outputDeviceId && outputCtx.setSinkId) {
+          setSinkPromise = outputCtx.setSinkId(outputDeviceId).catch(function(e) {
+            console.warn('[MC] setSinkId failed:', e.message);
+          });
+        }
+
+        return setSinkPromise.then(function() {
+          var merger = outputCtx.createChannelMerger(numChannels);
+          merger.connect(outputCtx.destination);
+          _mc = {
+            rawStream: rawStream, inputRes: inputRes,
+            outputCtx: outputCtx, merger: merger,
+            channelStreams: channelStreams, outputSources: {},
+            numChannels: numChannels, actualChannels: actualChannels
+          };
+          console.log('[MC] Ready: ' + channelStreams.length + ' streams (' + inputRes.type + '), device=' + actualChannels + 'ch');
+          return actualChannels;
+        });
+      });
+    }
+
+    function getChannelStream(channelIndex) {
+      if (!_mc || channelIndex >= _mc.channelStreams.length) return null;
+      return _mc.channelStreams[channelIndex];
+    }
+
+    function getChannelStreamId(channelIndex) {
+      var s = getChannelStream(channelIndex);
+      return s ? s.id : '';
+    }
+
+    function routeConsumerToChannel(channelIndex, consumerStream) {
+      if (!_mc || !_mc.outputCtx || !_mc.merger) return false;
+      if (_mc.outputSources[channelIndex]) {
+        try { _mc.outputSources[channelIndex].disconnect(); } catch(_) {}
+      }
+      var src = _mc.outputCtx.createMediaStreamSource(consumerStream);
+      src.connect(_mc.merger, 0, channelIndex);
+      _mc.outputSources[channelIndex] = src;
+      console.log('[MC] Consumer routed to output channel ' + channelIndex);
+      return true;
+    }
+
+    function disconnectOutputChannel(channelIndex) {
+      if (!_mc || !_mc.outputSources[channelIndex]) return;
+      try { _mc.outputSources[channelIndex].disconnect(); } catch(_) {}
+      delete _mc.outputSources[channelIndex];
+    }
+
+    function destroyMultiChannel() {
+      if (!_mc) return;
+      // Input cleanup
+      var ir = _mc.inputRes;
+      if (ir) {
+        ir.active = false;
+        if (ir.reader) try { ir.reader.cancel(); } catch(_) {}
+        if (ir.writers) ir.writers.forEach(function(w) { try { w.close(); } catch(_) {} });
+        if (ir.generators) ir.generators.forEach(function(g) { try { g.stop(); } catch(_) {} });
+        if (ir.splitter) try { ir.splitter.disconnect(); } catch(_) {}
+        if (ir.inputCtx) try { ir.inputCtx.close(); } catch(_) {}
+      }
+      // Output cleanup
+      for (var k in _mc.outputSources) {
+        try { _mc.outputSources[k].disconnect(); } catch(_) {}
+      }
+      try { _mc.merger.disconnect(); } catch(_) {}
+      try { _mc.outputCtx.close(); } catch(_) {}
+      if (_mc.rawStream) _mc.rawStream.getTracks().forEach(function(t) { t.stop(); });
+      for (var ch in _voxMonitors) { destroyVoxMonitor(ch); }
+      _mc = null;
+      console.log('[MC] Destroyed');
+    }
+
+    // ======================== VOX Monitor (per channel) ========================
+    var _voxMonitors = {};
+
+    function createVoxMonitor(channelId, thresholdDb, holdMs, onStartCb, onStopCb) {
+      destroyVoxMonitor(channelId);
+      var chIndex = parseInt(channelId.replace('ch', ''));
+      var stream = _mc ? getChannelStream(chIndex) : null;
+      if (!stream) {
+        console.warn('[VOX] No stream for channel ' + channelId);
+        return false;
+      }
+      var ctx = new AudioContext();
+      var source = ctx.createMediaStreamSource(stream);
+      var analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.3;
+      source.connect(analyser);
+      var dataArray = new Float32Array(analyser.fftSize);
+      var active = false;
+      var holdTimer = null;
+      var threshold = Math.pow(10, thresholdDb / 20);
+
+      var interval = setInterval(function() {
+        analyser.getFloatTimeDomainData(dataArray);
+        var sum = 0;
+        for (var i = 0; i < dataArray.length; i++) sum += dataArray[i] * dataArray[i];
+        var rms = Math.sqrt(sum / dataArray.length);
+        var levelDb = rms > 0 ? 20 * Math.log10(rms) : -100;
+        var level = Math.max(0, Math.min(1, (levelDb + 60) / 60));
+        if (_voxMonitors[channelId]) _voxMonitors[channelId].level = level;
+
+        if (rms > threshold) {
+          if (holdTimer) { clearTimeout(holdTimer); holdTimer = null; }
+          if (!active) {
+            active = true;
+            if (_voxMonitors[channelId]) _voxMonitors[channelId].active = true;
+            try { onStartCb(); } catch(e) { console.error('[VOX] onStart error:', e); }
+          }
+        } else if (active && !holdTimer) {
+          holdTimer = setTimeout(function() {
+            active = false;
+            holdTimer = null;
+            if (_voxMonitors[channelId]) _voxMonitors[channelId].active = false;
+            try { onStopCb(); } catch(e) { console.error('[VOX] onStop error:', e); }
+          }, holdMs);
+        }
+      }, 50);
+
+      _voxMonitors[channelId] = { ctx: ctx, analyser: analyser, source: source, interval: interval, active: false, holdTimer: null, level: 0 };
+      console.log('[VOX] Monitor created for ' + channelId + ' threshold=' + thresholdDb + 'dB');
+      return true;
+    }
+
+    function destroyVoxMonitor(channelId) {
+      var mon = _voxMonitors[channelId];
+      if (!mon) return;
+      clearInterval(mon.interval);
+      if (mon.holdTimer) clearTimeout(mon.holdTimer);
+      try { mon.source.disconnect(); } catch(_) {}
+      try { mon.ctx.close(); } catch(_) {}
+      delete _voxMonitors[channelId];
+    }
+
+    function getVoxLevel(channelId) {
+      var mon = _voxMonitors[channelId];
+      return mon ? mon.level : 0;
+    }
+
+    // ======================== getUserMedia override for per-channel capture ========================
+    // When _mc is active and constraints contain _mcChannel, return the pre-split mono stream
+    // instead of calling the real getUserMedia. This lets Dart's MediaService get a mono channel
+    // stream transparently without any type bridging.
+    var _origGetUserMedia = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+    navigator.mediaDevices.getUserMedia = function(constraints) {
+      if (_mc && constraints && constraints.audio && typeof constraints.audio === 'object'
+          && constraints.audio._mcChannel !== undefined) {
+        var ch = constraints.audio._mcChannel;
+        if (ch >= 0 && ch < _mc.channelStreams.length) {
+          console.log('[MC] getUserMedia intercepted → channel ' + ch);
+          return Promise.resolve(_mc.channelStreams[ch]);
+        }
+      }
+      return _origGetUserMedia(constraints);
+    };
+
+    // ======================== Route consumer audio to multi-channel output ========================
+    // Finds an <audio> element by stream ID and routes it to the merger output channel.
+    // Mutes the element so it doesn't also play through the default output.
+    function routeAudioStreamToChannel(streamId, channelIndex) {
+      if (!_mc) return false;
+      var found = false;
+      document.querySelectorAll('audio, video').forEach(function(el) {
+        if (el.srcObject && el.srcObject.id === streamId) {
+          routeConsumerToChannel(channelIndex, el.srcObject);
+          el.muted = true;
+          found = true;
+        }
+      });
+      if (!found) {
+        console.warn('[MC] routeAudioStreamToChannel: stream ' + streamId + ' not found in DOM');
+      }
+      return found;
+    }
+  </script>
+  <script src="flutter_bootstrap.js" async></script>
+</body>
+</html>
