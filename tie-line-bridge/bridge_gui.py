@@ -416,11 +416,14 @@ class BridgeApp:
         self.loop = None
         self._input_devices: list[str] = []
         self._output_devices: list[str] = []
+        self._admin_authenticated = False  # Gate: must login before connecting
 
         self._build_ui()
         self._load_config()
         self._refresh_devices()
         self._start_status_timer()
+        # Disable connect buttons until admin login
+        self._update_auth_state()
 
     def _build_ui(self):
         # ---- Header with logo ----
@@ -461,10 +464,10 @@ class BridgeApp:
         self._server_entry = ctk.CTkEntry(row1, textvariable=self.server_var, width=280, height=32)
         self._server_entry.pack(side="left", padx=4)
 
-        # Server status indicator (dot next to entry)
-        self._server_status = ctk.CTkLabel(row1, text="●", font=("Arial", 14),
-                                            text_color=COLOR_DIM, width=20)
-        self._server_status.pack(side="left", padx=(0, 4))
+        # Server status indicator (full-height LED)
+        self._server_status = ctk.CTkLabel(row1, text="●", font=("Arial", 36),
+                                            text_color=COLOR_DIM, width=40)
+        self._server_status.pack(side="left", padx=(0, 8))
 
         # Auto-detect server changes
         self.server_var.trace_add("write", self._on_server_changed)
@@ -482,10 +485,10 @@ class BridgeApp:
                       text_color="#1a1a2e",
                       command=self._fetch_directory).pack(side="right", padx=4)
 
-        ctk.CTkButton(row1, text="⬇ Config", width=100, height=32,
+        ctk.CTkButton(row1, text="🔒 Login", width=100, height=32,
                       fg_color=COLOR_ORANGE, hover_color="#ff8f00",
                       text_color="#1a1a2e",
-                      command=self._download_config).pack(side="right", padx=4)
+                      command=self._show_login_dialog).pack(side="right", padx=4)
 
         ctk.CTkButton(row1, text="↻ Devices", width=100, height=32,
                       fg_color=COLOR_ACCENT, hover_color="#6a1fd6",
@@ -698,38 +701,84 @@ class BridgeApp:
             count += 1
         self.status_var.set(f"✓ Default devices applied to {count} channels")
 
-    # ======================== DOWNLOAD CONFIG FROM SERVER ========================
+    # ======================== LOGIN & DOWNLOAD CONFIG ========================
 
-    def _download_config(self):
-        """Download bridge config from server admin API."""
+    def _show_login_dialog(self):
+        """Show admin login dialog, then download bridge config + directory."""
         server = self.server_var.get().strip()
         if not server:
-            messagebox.showwarning("Config", "Enter the server URL")
+            messagebox.showwarning("Login", "Enter the server URL first")
             return
-        creds = None
-        for row in self.channel_rows:
-            u = row.user_var.get().strip()
-            p = row.pass_var.get().strip()
-            if u and p:
-                creds = (u, p)
-                break
-        if not creds:
-            messagebox.showwarning("Config", "Configure at least one channel with username/password first")
-            return
-        self.status_var.set("Downloading config from server...")
-        threading.Thread(target=self._download_config_bg, args=(server, creds), daemon=True).start()
 
-    def _download_config_bg(self, server: str, creds: tuple):
+        dialog = ctk.CTkToplevel(self.root)
+        dialog.title("Admin Login")
+        dialog.geometry("340x260")
+        dialog.resizable(False, False)
+        dialog.configure(fg_color=COLOR_CARD)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        ctk.CTkLabel(dialog, text="Admin credentials", font=("SF Pro Display", 16, "bold"),
+                     text_color=COLOR_TEXT).pack(pady=(16, 4))
+        ctk.CTkLabel(dialog, text=f"Server: {server}", font=("SF Pro Display", 11),
+                     text_color=COLOR_DIM).pack(pady=(0, 12))
+
+        user_var = tk.StringVar(value="admin")
+        pass_var = tk.StringVar()
+
+        ctk.CTkEntry(dialog, textvariable=user_var, width=260, height=32,
+                     placeholder_text="Username").pack(pady=4)
+        pass_entry = ctk.CTkEntry(dialog, textvariable=pass_var, width=260, height=32,
+                                   placeholder_text="Password", show="\u2022")
+        pass_entry.pack(pady=4)
+        pass_entry.focus()
+
+        status_label = ctk.CTkLabel(dialog, text="", font=("SF Pro Display", 11),
+                                      text_color=COLOR_RED)
+        status_label.pack(pady=(4, 0))
+
+        def do_login():
+            u = user_var.get().strip()
+            p = pass_var.get().strip()
+            if not u or not p:
+                return
+            status_label.configure(text="Connecting...", text_color=COLOR_ORANGE)
+            threading.Thread(target=self._login_and_download, args=(server, (u, p), dialog, status_label), daemon=True).start()
+
+        pass_entry.bind("<Return>", lambda _: do_login())
+        ctk.CTkButton(dialog, text="Login & Download Config", width=260, height=36,
+                      font=("SF Pro Display", 13, "bold"),
+                      fg_color=COLOR_GREEN, hover_color="#00c853",
+                      text_color="#1a1a2e",
+                      command=do_login).pack(pady=(12, 8))
+
+    def _login_and_download(self, server: str, creds: tuple, dialog, status_label):
+        """Background: authenticate admin, then download config. Close dialog only on success."""
         import asyncio as _aio
         loop = _aio.new_event_loop()
         try:
             result = loop.run_until_complete(self._download_config_async(server, creds))
             if result:
+                self._admin_authenticated = True
+                self.root.after(0, dialog.destroy)
                 self.root.after(0, self._apply_server_config, result)
+                self.root.after(0, self._update_auth_state)
         except Exception as e:
-            self.root.after(0, lambda msg=str(e): self.status_var.set(f"Config error: {msg}"))
+            self._admin_authenticated = False
+            msg = str(e)
+            self.root.after(0, lambda: status_label.configure(text=f"\u2717 {msg}", text_color=COLOR_RED))
+            self.root.after(0, lambda: self.status_var.set(f"Login failed: {msg}"))
         finally:
             loop.close()
+
+    def _update_auth_state(self):
+        """Enable/disable connect buttons based on auth state."""
+        for row in self.channel_rows:
+            if self._admin_authenticated:
+                row.ch_connect_btn.configure(state="normal")
+            else:
+                row.ch_connect_btn.configure(state="disabled")
+        self.connect_btn.configure(state="normal" if self._admin_authenticated else "disabled")
 
     async def _download_config_async(self, server: str, creds: tuple):
         timeout = aiohttp.ClientTimeout(total=10)

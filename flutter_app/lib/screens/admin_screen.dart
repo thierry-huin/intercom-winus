@@ -51,13 +51,33 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
 
   ApiService get api => context.read<AuthProvider>().api;
 
+  bool _isFullAdmin = true; // default, updated in didChangeDependencies
+  bool _tabInitialized = false;
+
   @override
   void initState() {
     super.initState();
-    _tabCtrl = TabController(length: 6, vsync: this);
+    _tabCtrl = TabController(length: 6, vsync: this); // placeholder
     _tabCtrl.addListener(_onTabChanged);
     _loadAll();
     _loadServerConfig();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (!_tabInitialized) {
+      _tabInitialized = true;
+      final role = context.read<AuthProvider>().user?['role'];
+      _isFullAdmin = role == 'admin';
+      final tabCount = _isFullAdmin ? 6 : 4;
+      if (_tabCtrl.length != tabCount) {
+        _tabCtrl.removeListener(_onTabChanged);
+        _tabCtrl.dispose();
+        _tabCtrl = TabController(length: tabCount, vsync: this);
+        _tabCtrl.addListener(_onTabChanged);
+      }
+    }
   }
 
   List<dynamic> _bridgeStatus = [];
@@ -65,7 +85,9 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
 
   void _onTabChanged() {
     // Auto-refresh bridge status when Bridges tab is selected
-    if (_tabCtrl.index == 5) {
+    // Bridges is tab 5 for admin, tab 3 for superuser
+    final bridgesIdx = _isFullAdmin ? 5 : 3;
+    if (_tabCtrl.index == bridgesIdx) {
       _loadBridgeStatus();
       _bridgeRefreshTimer?.cancel();
       _bridgeRefreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _loadBridgeStatus());
@@ -468,6 +490,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                   items: const [
                     DropdownMenuItem(value: 'user', child: Text('User')),
                     DropdownMenuItem(value: 'admin', child: Text('Admin')),
+                    DropdownMenuItem(value: 'superuser', child: Text('Super User (Bridge)')),
                     DropdownMenuItem(value: 'bridge', child: Text('Bridge')),
                   ],
                   onChanged: (v) => setDialogState(() => selectedRole = v!),
@@ -525,6 +548,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                   items: const [
                     DropdownMenuItem(value: 'user', child: Text('User')),
                     DropdownMenuItem(value: 'admin', child: Text('Admin')),
+                    DropdownMenuItem(value: 'superuser', child: Text('Super User (Bridge)')),
                     DropdownMenuItem(value: 'bridge', child: Text('Bridge')),
                   ],
                   onChanged: (v) => setDialogState(() => selectedRole = v!),
@@ -1168,13 +1192,13 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
           labelColor: Colors.white,
           unselectedLabelColor: Colors.white60,
           isScrollable: true,
-          tabs: const [
-            Tab(icon: Icon(Icons.person, size: 18), text: 'Users'),
-            Tab(icon: Icon(Icons.group, size: 18), text: 'Groups'),
-            Tab(icon: Icon(Icons.security, size: 18), text: 'Permissions'),
-            Tab(icon: Icon(Icons.settings, size: 18), text: 'Settings'),
-            Tab(icon: Icon(Icons.download, size: 18), text: 'Downloads'),
-            Tab(icon: Icon(Icons.cable, size: 18), text: 'Bridges'),
+          tabs: [
+            const Tab(icon: Icon(Icons.person, size: 18), text: 'Users'),
+            const Tab(icon: Icon(Icons.group, size: 18), text: 'Groups'),
+            const Tab(icon: Icon(Icons.security, size: 18), text: 'Permissions'),
+            if (_isFullAdmin) const Tab(icon: Icon(Icons.settings, size: 18), text: 'Settings'),
+            if (_isFullAdmin) const Tab(icon: Icon(Icons.download, size: 18), text: 'Downloads'),
+            const Tab(icon: Icon(Icons.cable, size: 18), text: 'Bridges'),
           ],
         ),
       ),
@@ -1184,8 +1208,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
           _buildUsersTab(),
           _buildGroupsTab(),
           _buildPermissionsTab(),
-          _buildSettingsTab(),
-          _buildDownloadsTab(),
+          if (_isFullAdmin) _buildSettingsTab(),
+          if (_isFullAdmin) _buildDownloadsTab(),
           _buildBridgesTab(),
         ],
       ),
@@ -1358,32 +1382,48 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   }
 
   Future<void> _exportConfig() async {
+    // Ask for filename
+    final nameCtrl = TextEditingController(
+      text: 'winus-config-${DateTime.now().toString().substring(0, 10)}',
+    );
+    final filename = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Export Configuration'),
+        content: TextField(
+          controller: nameCtrl,
+          decoration: const InputDecoration(
+            labelText: 'Filename',
+            suffixText: '.txt',
+            border: OutlineInputBorder(),
+          ),
+          autofocus: true,
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+          ElevatedButton(
+            onPressed: () => Navigator.pop(ctx, nameCtrl.text.trim()),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    if (filename == null || filename.isEmpty) return;
+
     try {
       final data = await api.exportConfig();
       final json = const JsonEncoder.withIndent('  ').convert(data);
-      // Show in a dialog with copy button
+      final finalName = filename.endsWith('.txt') ? filename : '$filename.txt';
+
+      // Copy to clipboard + show confirmation
+      await Clipboard.setData(ClipboardData(text: json));
       if (!mounted) return;
-      showDialog(
-        context: context,
-        builder: (ctx) => AlertDialog(
-          title: const Text('Config exported'),
-          content: SizedBox(
-            width: 400, height: 300,
-            child: SingleChildScrollView(
-              child: SelectableText(json, style: const TextStyle(fontSize: 11, fontFamily: 'monospace')),
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Clipboard.setData(ClipboardData(text: json));
-                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
-              },
-              child: const Text('Copy'),
-            ),
-            ElevatedButton(onPressed: () => Navigator.pop(ctx), child: const Text('Close')),
-          ],
-        ),
+
+      // On web: trigger file download via platform
+      platformDownloadFile(finalName, json);
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Config exported as $finalName (also copied to clipboard)'), backgroundColor: Colors.green),
       );
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export error: $e')));
@@ -1404,7 +1444,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
             expands: true,
             style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
             decoration: const InputDecoration(
-              hintText: 'Paste exported JSON here...',
+              hintText: 'Paste the content of a .txt config file here...',
               border: OutlineInputBorder(),
             ),
           ),

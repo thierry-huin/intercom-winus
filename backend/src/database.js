@@ -93,10 +93,10 @@ function initialize() {
     // Column already exists, ignore
   }
 
-  // Migration: add 'bridge' to role CHECK constraint (existing databases)
+  // Migration: add 'bridge' and 'superuser' to role CHECK constraint
   try {
     const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
-    if (schema && schema.sql.includes("('admin', 'user')") && !schema.sql.includes("'bridge'")) {
+    if (schema && !schema.sql.includes("'superuser'")) {
       db.pragma('foreign_keys = OFF');
       db.exec(`
         CREATE TABLE users_new (
@@ -104,7 +104,7 @@ function initialize() {
           username TEXT UNIQUE NOT NULL,
           password_hash TEXT NOT NULL,
           display_name TEXT NOT NULL,
-          role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin', 'user', 'bridge')),
+          role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin', 'superuser', 'user', 'bridge')),
           room_id INTEGER UNIQUE,
           color TEXT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -114,7 +114,7 @@ function initialize() {
         ALTER TABLE users_new RENAME TO users;
       `);
       db.pragma('foreign_keys = ON');
-      console.log('[DB] Migrated role CHECK to include bridge');
+      console.log('[DB] Migrated role CHECK to include superuser');
     }
   } catch (e) {
     console.warn('[DB] Role migration note:', e.message);

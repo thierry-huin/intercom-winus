@@ -94,9 +94,9 @@ router.post('/login', (req, res) => {
   }
 
   // Session lock: reject if user is already connected
-  // Admins and bridges bypass — bridges need to reconnect after transient failures
+  // Admins, superusers and bridges bypass — bridges need to reconnect after transient failures
   // and the WS auth handler already cleans up stale state on reconnect
-  if (user.role !== 'admin' && user.role !== 'bridge' && getOnlineUserIds().includes(user.id)) {
+  if (user.role !== 'admin' && user.role !== 'superuser' && user.role !== 'bridge' && getOnlineUserIds().includes(user.id)) {
     return res.status(409).json({ error: 'User already connected' });
   }
 
@@ -135,9 +135,9 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// Admin-only middleware
+// Admin-only middleware (admin + superuser)
 function adminMiddleware(req, res, next) {
-  if (req.user.role !== 'admin') {
+  if (req.user.role !== 'admin' && req.user.role !== 'superuser') {
     return res.status(403).json({ error: 'Acceso de administrador requerido' });
   }
   next();

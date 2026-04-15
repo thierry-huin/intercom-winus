@@ -150,6 +150,11 @@ class _IntercomTaskHandler extends TaskHandler {
   Future<void> onDestroy(DateTime timestamp) async {}
 }
 
+/// Download/save a text file (no-op on Android, used on web)
+void platformDownloadFile(String filename, String content) {
+  // On Android, clipboard is used instead (already copied before this call)
+}
+
 // ======================== Audio Focus ========================
 
 /// Release exclusive audio focus (MODE_IN_COMMUNICATION → MODE_NORMAL)

@@ -661,6 +661,20 @@
       }
       return found;
     }
+    // ======================== File download helper ========================
+    function _downloadTextFile(filename, content) {
+      var blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      var url = URL.createObjectURL(blob);
+      var a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      setTimeout(function() {
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+      }, 100);
+    }
   </script>
   <script src="flutter_bootstrap.js" async></script>
 </body>

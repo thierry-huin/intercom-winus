@@ -53,18 +53,27 @@ mkdir -p "$DEB_DIR/usr/local/bin"
 mkdir -p "$DEB_DIR/usr/share/applications"
 mkdir -p "$DEB_DIR/usr/share/icons/hicolor/512x512/apps"
 
-# Copy application files
-rsync -a --exclude='flutter_app/.dart_tool' \
-         --exclude='flutter_app/build/app' \
+# Copy application files (excluding build artifacts, git, large files)
+rsync -a --exclude='.git' \
+         --exclude='flutter_app/build' \
+         --exclude='flutter_app/.dart_tool' \
+         --exclude='flutter_app/.flutter-plugins' \
+         --exclude='flutter_app/.flutter-plugins-dependencies' \
          --exclude='flutter_app/android/.gradle' \
+         --exclude='flutter_app/android/app/build' \
+         --exclude='flutter_app/android/local.properties' \
          --exclude='backend/node_modules' \
          --exclude='backend/db/*.db' \
          --exclude='backend/db/*.db-shm' \
          --exclude='backend/db/*.db-wal' \
          --exclude='tie-line-bridge/__pycache__' \
          --exclude='tie-line-bridge/.venv' \
+         --exclude='tie-line-bridge/opus.dll' \
          --exclude='*.tar.gz' \
+         --exclude='*.deb' \
          --exclude='.env' \
+         --exclude='nginx/certs/*.pem' \
+         --exclude='nginx/downloads/*.apk' \
          "$INTERCOM_DIR/" "$APP_DIR/"
 
 # Copy built web app

@@ -153,6 +153,17 @@ String getServerWsUrl() {
   return '$wsScheme://${base.host}:${base.port}/ws';
 }
 
+/// Download a text file (web: triggers browser download)
+void platformDownloadFile(String filename, String content) {
+  try {
+    // Use JS to create a download link
+    _jsDownloadFile(filename.toJS, content.toJS);
+  } catch (_) {}
+}
+
+@JS('_downloadTextFile')
+external void _jsDownloadFile(JSString filename, JSString content);
+
 // Stubs (only used on Android)
 Future<void> platformReleaseAudioFocus() async {}
 void platformInit() {}
