@@ -1,0 +1,22 @@
+{
+  "id": "winus-intercom",
+  "name": "winus-intercom",
+  "shortname": "Winus Intercom",
+  "description": "Control Winus Intercom PTT from a Streamdeck (Latch/Momentary gestures).",
+  "version": "0.1.0",
+  "license": "MIT",
+  "repository": "",
+  "manufacturer": "Huin",
+  "products": ["Winus Intercom"],
+  "keywords": ["intercom", "ptt", "streamdeck", "broadcast"],
+  "author": {
+    "name": "Thierry",
+    "email": ""
+  },
+  "runtime": {
+    "type": "node18",
+    "api": "nodejs-ipc",
+    "apiVersion": "1.10.0",
+    "entrypoint": "dist/main.js"
+  }
+}

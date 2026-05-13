@@ -4,16 +4,32 @@ services:
     container_name: intercom-backend
     restart: unless-stopped
     network_mode: host
+    working_dir: /app
     environment:
       - JWT_SECRET=${JWT_SECRET:-change_this_jwt_secret}
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
       - MEDIASOUP_ANNOUNCED_IPS=${MEDIASOUP_ANNOUNCED_IPS:-}
-      - TURN_PORT=3478
+      - TURN_PORT=3479
       - TURN_USER=${TURN_USER:-intercom}
       - TURN_PASSWORD=${TURN_PASSWORD:-intercom2024}
+      # Tell infra-sync.js where the host-side files live and which
+      # compose file to drive when it needs to recreate coturn / nginx.
+      - INTERCOM_HOST_DIR=/opt/winus-intercom
+      - INTERCOM_COMPOSE_FILE=/app/docker-compose.yml
     volumes:
       - ./backend/db:/app/db
+      # Read+write so PUT /api/admin/server-config can rewrite IP keys.
+      - ./.env:/app/.env
+      # Read-only — backend only invokes `docker compose -f` against it.
+      - ./docker-compose.yml:/app/docker-compose.yml:ro
+      # Read+write so we can regenerate the self-signed cert when the
+      # public_domain or external IP changes.
+      - ./nginx/certs:/app/nginx/certs
+      # Required so the backend can `docker compose up -d coturn nginx`
+      # to apply the new env values. This grants root-on-host access
+      # to the container; acceptable on a single-tenant intercom box.
+      - /var/run/docker.sock:/var/run/docker.sock
 
   nginx:
     build: ./nginx
@@ -43,7 +59,26 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        RESOLVED_IP=$$(getent hosts ${EXTERNAL_IP:-huin.tv} | awk '{print $$1}' | head -1)
+        if [ -z "${EXTERNAL_IP}" ]; then
+          echo "" >&2
+          echo "FATAL: EXTERNAL_IP is not set in .env." >&2
+          echo "Set EXTERNAL_IP (and LOCAL_IP) to this server's public and" >&2
+          echo "private addresses, e.g.:" >&2
+          echo "  EXTERNAL_IP=winus.overon.es" >&2
+          echo "  LOCAL_IP=10.0.0.5" >&2
+          echo "Refusing to start with a hard-coded default to avoid" >&2
+          echo "accidentally routing TURN traffic to another server." >&2
+          exit 1
+        fi
+        if [ -z "${LOCAL_IP}" ]; then
+          echo "FATAL: LOCAL_IP is not set in .env." >&2
+          exit 1
+        fi
+        RESOLVED_IP=$$(getent hosts ${EXTERNAL_IP} | awk '{print $$1}' | head -1)
+        if [ -z "$$RESOLVED_IP" ]; then
+          echo "FATAL: Could not resolve EXTERNAL_IP=${EXTERNAL_IP}" >&2
+          exit 1
+        fi
         echo "TURN external-ip: $$RESOLVED_IP / ${LOCAL_IP}"
         exec turnserver -c /etc/coturn/turnserver.conf \
           --user=${TURN_USER:-intercom}:${TURN_PASSWORD:-intercom2024} \

@@ -10,9 +10,16 @@ import AVKit
     _ application: UIApplication,
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
-    // Configure audio session for background playback
+    // Configure audio session for background playback. We intentionally omit
+    // `.defaultToSpeaker` so that selecting "Earpiece" in the UI actually
+    // routes to the built-in receiver rather than the loudspeaker. The
+    // per-device routing is performed by AudioChannelHandler.
     let audioSession = AVAudioSession.sharedInstance()
-    try? audioSession.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetoothA2DP, .defaultToSpeaker, .mixWithOthers])
+    try? audioSession.setCategory(
+      .playAndRecord,
+      mode: .voiceChat,
+      options: [.allowBluetooth, .allowBluetoothA2DP, .mixWithOthers]
+    )
     try? audioSession.setActive(true)
 
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
@@ -20,6 +27,12 @@ import AVKit
 
   func didInitializeImplicitFlutterEngine(_ engineBridge: FlutterImplicitEngineBridge) {
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
+
+    // Wire up the tv.huin.intercom/audio method channel so Flutter can list
+    // earpiece / speakerphone / BT / wired devices and route audio to them.
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "IntercomAudioChannel") {
+      AudioChannelHandler.shared.register(with: registrar.messenger())
+    }
 
     // Initialize PiP after Flutter engine is ready (requires iOS 15+)
     if #available(iOS 15.0, *) {
@@ -97,7 +110,11 @@ class IntercomPiPManager: NSObject, AVPictureInPictureControllerDelegate {
 
   private func startFrameGeneration() {
     displayLink = CADisplayLink(target: self, selector: #selector(generateFrame))
-    displayLink?.preferredFramesPerSecond = 1 // Minimal — just to keep PiP alive
+    if #available(iOS 15.0, *) {
+      displayLink?.preferredFrameRateRange = CAFrameRateRange(minimum: 1, maximum: 1, preferred: 1)
+    } else {
+      displayLink?.preferredFramesPerSecond = 1
+    }
     displayLink?.add(to: .main, forMode: .common)
   }
 

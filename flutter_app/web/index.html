@@ -165,6 +165,42 @@
     function vibrateIncoming() {
       if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
     }
+
+    // Ringtone (admin "attention" bell). Uses a short oscillator beep repeated
+    // every 1.5s so we don't need to ship an audio asset on the web build.
+    var _ringInterval = null;
+    var _ringCtx = null;
+    function playRingtone() {
+      stopRingtone();
+      try {
+        var AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (!AudioCtx) return;
+        _ringCtx = new AudioCtx();
+        function beep() {
+          if (!_ringCtx) return;
+          var osc = _ringCtx.createOscillator();
+          var gain = _ringCtx.createGain();
+          osc.type = 'sine';
+          osc.frequency.setValueAtTime(880, _ringCtx.currentTime);
+          osc.frequency.setValueAtTime(1175, _ringCtx.currentTime + 0.25);
+          gain.gain.setValueAtTime(0.0001, _ringCtx.currentTime);
+          gain.gain.exponentialRampToValueAtTime(0.5, _ringCtx.currentTime + 0.02);
+          gain.gain.exponentialRampToValueAtTime(0.0001, _ringCtx.currentTime + 0.5);
+          osc.connect(gain); gain.connect(_ringCtx.destination);
+          osc.start();
+          osc.stop(_ringCtx.currentTime + 0.55);
+        }
+        beep();
+        _ringInterval = setInterval(beep, 1500);
+        if (navigator.vibrate) navigator.vibrate([0, 400, 200, 400, 200, 400]);
+      } catch (e) {
+        console.warn('[Ring] playRingtone error:', e);
+      }
+    }
+    function stopRingtone() {
+      if (_ringInterval) { clearInterval(_ringInterval); _ringInterval = null; }
+      if (_ringCtx) { try { _ringCtx.close(); } catch(_) {} _ringCtx = null; }
+    }
     var _savedSinkId = null;
     function setAudioSinkId(deviceId) {
       _savedSinkId = deviceId;

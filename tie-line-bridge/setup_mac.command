@@ -13,7 +13,7 @@ VENV_DIR="$SCRIPT_DIR/.venv"
 
 clear
 echo "╔══════════════════════════════════════════╗"
-echo "║   Tie Line Bridge v3.2.2 — macOS          ║"
+echo "║   Tie Line Bridge v3.3.0 — macOS          ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
@@ -121,7 +121,7 @@ cat > "$APP_CONTENTS/Info.plist" << PLIST_EOF
     <key>CFBundleIdentifier</key>
     <string>com.intercom.tieline-bridge</string>
     <key>CFBundleVersion</key>
-    <string>3.2.2</string>
+    <string>3.3.0</string>
     <key>CFBundleExecutable</key>
     <string>launch</string>
     <key>CFBundleIconFile</key>

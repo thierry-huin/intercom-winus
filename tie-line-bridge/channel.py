@@ -132,6 +132,7 @@ class TieLineChannel:
         self._ws_reader_task = None
         self._ptt_retry_task = None
         self._ptt_active = False  # True when server accepted our PTT
+        self._rx_keepalive_task = None
 
     @property
     def label(self):
@@ -308,6 +309,17 @@ class TieLineChannel:
             "port": local_port,
         })
         print(f"[{tag}] Recv connected: {recv_ip}:{local_port}")
+
+        # Server-side PlainTransport runs in comedia mode for recv too, so it
+        # learns where to send our audio from the first packet we emit on the
+        # RX socket. Fire a tiny RTCP RR now and keep it alive every 10 s so
+        # NAT mappings in the middle stay open.
+        recv_keepalive_ip = recv_server_ip if recv_server_ip != "0.0.0.0" else _parsed.hostname
+        recv_keepalive_port = recv_server_port
+        self._rtp_receiver.send_keepalive(recv_keepalive_ip, recv_keepalive_port)
+        self._rx_keepalive_task = asyncio.create_task(
+            self._rx_keepalive_loop(recv_keepalive_ip, recv_keepalive_port)
+        )
 
         # 9. Start RTP sender
         # The server IP might be 0.0.0.0 — use the server's announced IP or hostname
@@ -685,6 +697,25 @@ class TieLineChannel:
                 return None
         return None
 
+    # ======================== NAT KEEPALIVE ========================
+
+    async def _rx_keepalive_loop(self, dest_ip: str, dest_port: int, interval: float = 10.0):
+        """Send a tiny RTCP RR from the RX socket to `dest_ip:dest_port` every
+        `interval` seconds so the NAT mapping toward the server stays open and
+        the server-side comedia transport knows where to reply with audio.
+        """
+        try:
+            while self._running and self._rtp_receiver is not None:
+                await asyncio.sleep(interval)
+                if not self._running or self._rtp_receiver is None:
+                    return
+                try:
+                    self._rtp_receiver.send_keepalive(dest_ip, dest_port)
+                except Exception as e:
+                    print(f"[{self.label}] RX keepalive error: {e}")
+        except asyncio.CancelledError:
+            raise
+
     # ======================== CLEANUP ========================
 
     async def _cleanup_resources(self):
@@ -707,6 +738,14 @@ class TieLineChannel:
             except (asyncio.CancelledError, Exception):
                 pass
             self._ws_reader_task = None
+
+        if self._rx_keepalive_task and not self._rx_keepalive_task.done():
+            self._rx_keepalive_task.cancel()
+            try:
+                await self._rx_keepalive_task
+            except (asyncio.CancelledError, Exception):
+                pass
+            self._rx_keepalive_task = None
 
         if self._rtp_sender:
             self._rtp_sender.stop()

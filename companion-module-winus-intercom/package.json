@@ -1,0 +1,28 @@
+{
+  "name": "companion-module-winus-intercom",
+  "version": "0.1.0",
+  "description": "Bitfocus Companion module to drive Winus Intercom PTT from a Streamdeck.",
+  "private": true,
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "clean": "rm -rf dist"
+  },
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@companion-module/base": "^1.11.0",
+    "@roamhq/wrtc": "^0.8.0",
+    "mediasoup-client": "^3.7.8",
+    "node-fetch": "^3.3.2",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "@types/ws": "^8.5.10",
+    "typescript": "^5.4.0"
+  }
+}

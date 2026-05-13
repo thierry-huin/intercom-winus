@@ -20,6 +20,11 @@ class AppColors {
   static const success = Color(0xFF4DD29A);
   static const warning = Color(0xFFF0A94A);
   static const error = Color(0xFFE57373);
+  // Solid red shown on the central PTT zone when the user is talking.
+  // Kept separate from `error` so a future theme change does not alter the
+  // "talking" feedback color.
+  static const talkRed = Color(0xFFE53935);
+  static const talkRedDark = Color(0xFFB71C1C);
 }
 
 ThemeData buildAppTheme() {

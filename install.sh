@@ -43,41 +43,88 @@ else
     echo -e "  ${GREEN}✓${NC} Docker installed"
 fi
 
-# ---- 2. Generate SSL certificate ----
-echo -e "${CYAN}[2/6]${NC} Generating SSL certificate..."
+# ---- 2. SSL certificate (deferred until after we know EXTERNAL_IP) ----
 CERT_DIR="$INSTALL_DIR/nginx/certs"
 mkdir -p "$CERT_DIR"
-if [ ! -f "$CERT_DIR/cert.pem" ]; then
-    SERVER_IP=$(hostname -I | awk '{print $1}')
-    openssl req -x509 -newkey rsa:2048 -keyout "$CERT_DIR/key.pem" -out "$CERT_DIR/cert.pem" \
-        -days 3650 -nodes -subj "/CN=Winus Intercom" \
-        -addext "subjectAltName=IP:$SERVER_IP,IP:127.0.0.1" 2>/dev/null
-    echo -e "  ${GREEN}✓${NC} Certificate generated for $SERVER_IP"
-else
-    echo -e "  ${GREEN}✓${NC} Certificate already exists"
-fi
 
 # ---- 3. Detect IPs and configure ----
 echo -e "${CYAN}[3/6]${NC} Configuring network..."
-# Public IP via LAN physical interface
 LAN_IP=$(ip -4 addr show | grep -v ' lo\| wg\| tailscale\| br-\| docker\| veth' | grep 'inet ' | awk '{print $2}' | cut -d/ -f1 | head -1)
-# ZeroTier
 ZT_IP=$(ip -4 addr show 2>/dev/null | grep -A2 ' zt' | grep inet | awk '{print $2}' | cut -d/ -f1 | head -1)
-# WireGuard
 WG_IP=$(ip -4 addr show 2>/dev/null | grep ' wg' | grep inet | awk '{print $2}' | cut -d/ -f1 | head -1)
-# Build announced IPs list
-SERVER_IP="${LAN_IP}"
-[ -n "$ZT_IP" ] && SERVER_IP="$SERVER_IP,$ZT_IP"
-[ -n "$WG_IP" ] && SERVER_IP="$SERVER_IP,$WG_IP"
+PUBLIC_IP="$(curl -fsS --max-time 3 https://api.ipify.org 2>/dev/null || true)"
 
-# Generate secrets
+AUTO_ANNOUNCED="${LAN_IP}"
+[ -n "$ZT_IP" ] && AUTO_ANNOUNCED="$AUTO_ANNOUNCED,$ZT_IP"
+[ -n "$WG_IP" ] && AUTO_ANNOUNCED="$AUTO_ANNOUNCED,$WG_IP"
+
+DEFAULT_EXTERNAL="${PUBLIC_IP:-$LAN_IP}"
+DEFAULT_LOCAL="${LAN_IP}"
+DEFAULT_ANNOUNCED="${DEFAULT_EXTERNAL}"
+[ -n "$LAN_IP" ] && [ "$LAN_IP" != "$DEFAULT_EXTERNAL" ] && DEFAULT_ANNOUNCED="$DEFAULT_EXTERNAL,$LAN_IP"
+DEFAULT_DOMAIN=""
+
+INTERACTIVE=no
+if [ -t 0 ] && [ -t 1 ] && [ "${DEBIAN_FRONTEND}" != "noninteractive" ]; then
+    INTERACTIVE=yes
+fi
+
+ask() {
+    local __var="$1"; local __prompt="$2"; local __default="$3"; local __answer=""
+    if [ "$INTERACTIVE" = "yes" ]; then
+        if [ -n "$__default" ]; then
+            read -r -p "  $__prompt [$__default]: " __answer </dev/tty || __answer=""
+        else
+            read -r -p "  $__prompt: " __answer </dev/tty || __answer=""
+        fi
+    fi
+    [ -z "$__answer" ] && __answer="$__default"
+    eval "$__var=\"\$__answer\""
+}
+
+if [ "$INTERACTIVE" = "yes" ]; then
+    echo ""
+    echo "─────────────────────────────────────────────"
+    echo " Winus Intercom — server network configuration"
+    echo "─────────────────────────────────────────────"
+    echo "Press Enter to accept the default shown in brackets."
+    echo ""
+fi
+
+ask EXTERNAL_IP "Public IP or domain clients will use (EXTERNAL_IP)" "$DEFAULT_EXTERNAL"
+ask LOCAL_IP    "Local/private IP of this server (LOCAL_IP)"         "$DEFAULT_LOCAL"
+ask MEDIASOUP_ANNOUNCED_IPS "Mediasoup announced IPs (comma-separated)" "$DEFAULT_ANNOUNCED"
+ask PUBLIC_DOMAIN "Optional public domain (Enter to skip)" "$DEFAULT_DOMAIN"
+
+# Generate secrets + persist .env
 JWT_SECRET=$(openssl rand -hex 32)
-sed -i '/^JWT_SECRET=/d; /^MEDIASOUP_ANNOUNCED_IP/d; /^EXTERNAL_IP/d; /^LOCAL_IP/d' "$INSTALL_DIR/.env" 2>/dev/null
+touch "$INSTALL_DIR/.env"
+sed -i '/^JWT_SECRET=/d; /^MEDIASOUP_ANNOUNCED_IP/d; /^EXTERNAL_IP/d; /^LOCAL_IP/d; /^PUBLIC_DOMAIN/d' "$INSTALL_DIR/.env" 2>/dev/null
 echo "JWT_SECRET=$JWT_SECRET" >> "$INSTALL_DIR/.env"
-echo "MEDIASOUP_ANNOUNCED_IPS=$SERVER_IP" >> "$INSTALL_DIR/.env"
-echo "EXTERNAL_IP=${LAN_IP}" >> "$INSTALL_DIR/.env"
-echo "LOCAL_IP=${LAN_IP}" >> "$INSTALL_DIR/.env"
-echo -e "  ${GREEN}✓${NC} Announced IPs: $SERVER_IP"
+echo "MEDIASOUP_ANNOUNCED_IPS=$MEDIASOUP_ANNOUNCED_IPS" >> "$INSTALL_DIR/.env"
+echo "EXTERNAL_IP=${EXTERNAL_IP}" >> "$INSTALL_DIR/.env"
+echo "LOCAL_IP=${LOCAL_IP}" >> "$INSTALL_DIR/.env"
+echo "PUBLIC_DOMAIN=${PUBLIC_DOMAIN}" >> "$INSTALL_DIR/.env"
+echo -e "  ${GREEN}✓${NC} Announced IPs: $MEDIASOUP_ANNOUNCED_IPS"
+
+# Now issue the SSL cert with EXTERNAL_IP / DOMAIN in the SAN
+if [ ! -f "$CERT_DIR/cert.pem" ]; then
+    SAN="IP:${LOCAL_IP},IP:127.0.0.1"
+    if [ -n "$EXTERNAL_IP" ] && [ "$EXTERNAL_IP" != "$LOCAL_IP" ]; then
+        if echo "$EXTERNAL_IP" | grep -qE '^[0-9.]+$'; then
+            SAN="$SAN,IP:${EXTERNAL_IP}"
+        else
+            SAN="$SAN,DNS:${EXTERNAL_IP}"
+        fi
+    fi
+    if [ -n "$PUBLIC_DOMAIN" ] && [ "$PUBLIC_DOMAIN" != "$EXTERNAL_IP" ]; then
+        SAN="$SAN,DNS:${PUBLIC_DOMAIN}"
+    fi
+    openssl req -x509 -newkey rsa:2048 -keyout "$CERT_DIR/key.pem" -out "$CERT_DIR/cert.pem" \
+        -days 3650 -nodes -subj "/CN=${EXTERNAL_IP:-Winus Intercom}" \
+        -addext "subjectAltName=${SAN}" 2>/dev/null
+    echo -e "  ${GREEN}✓${NC} Certificate generated (SAN: ${SAN})"
+fi
 
 # ---- 4. Fix permissions ----
 echo -e "${CYAN}[4/6]${NC} Setting permissions..."
@@ -136,7 +183,11 @@ chown -R "$REAL_USER:$REAL_USER" "$DESKTOP_DIR"
 echo -e "  ${GREEN}✓${NC} Desktop shortcuts created"
 
 # ---- DONE ----
-WEB_URL="https://$LAN_IP:8443"
+if [ -n "$PUBLIC_DOMAIN" ]; then
+    WEB_URL="https://${PUBLIC_DOMAIN}:8443"
+else
+    WEB_URL="https://${EXTERNAL_IP:-$LAN_IP}:8443"
+fi
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║  ✅ Winus Intercom installed!             ║${NC}"

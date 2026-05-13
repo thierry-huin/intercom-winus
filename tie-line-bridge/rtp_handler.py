@@ -77,6 +77,26 @@ class RtpReceiver:
         self.actual_port = sock.getsockname()[1]
         return self.actual_port
 
+    def send_keepalive(self, dest_ip: str, dest_port: int) -> None:
+        """Send a minimal RTCP Receiver Report from the RX socket.
+
+        Used to punch the NAT mapping outbound so the remote mediasoup
+        PlainTransport (running in ``comedia: true`` mode) can learn where
+        to reply with RTP audio. Called periodically while the channel is
+        connected so the mapping stays alive.
+        """
+        if not self._transport:
+            return
+        # 8-byte RTCP Receiver Report, no report blocks. Mediasoup accepts
+        # it silently and its comedia logic captures the source tuple.
+        #   V=2, P=0, RC=0, PT=201 (RR), length=1 word, SSRC=0
+        packet = bytes((0x80, 0xc9, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00))
+        try:
+            self._transport.sendto(packet, (dest_ip, dest_port))
+        except Exception:
+            # Keepalive is best-effort; failures are logged upstream.
+            pass
+
     async def recv(self, timeout: float = 1.0) -> bytes | None:
         """Receive next RTP payload (strips header). Returns None on timeout."""
         try:

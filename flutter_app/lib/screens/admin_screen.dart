@@ -26,7 +26,7 @@ class AdminScreen extends StatefulWidget {
   State<AdminScreen> createState() => _AdminScreenState();
 }
 
-enum UserSortMode { alphabetical, byColor }
+enum UserSortMode { alphabetical, byColor, byGroup }
 
 class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStateMixin {
   late TabController _tabCtrl;
@@ -45,9 +45,14 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   final _turnPortCtrl = TextEditingController(text: '3478');
   final _turnUserCtrl = TextEditingController();
   final _turnPassCtrl = TextEditingController();
+  final _publicDomainCtrl = TextEditingController();
   final _newIpCtrl = TextEditingController();
   bool _configLoading = false;
   bool _configSaving = false;
+  // Last infra-sync error reported by the backend (empty = no error). The
+  // backend persists this in `server_config.last_sync_error`; we display
+  // it as a dismissable banner above the Settings tab.
+  String _lastSyncError = '';
 
   ApiService get api => context.read<AuthProvider>().api;
 
@@ -111,6 +116,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     _turnPortCtrl.dispose();
     _turnUserCtrl.dispose();
     _turnPassCtrl.dispose();
+    _publicDomainCtrl.dispose();
     _newIpCtrl.dispose();
     super.dispose();
   }
@@ -129,6 +135,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         _turnPortCtrl.text = cfg['turn_port'] ?? '3478';
         _turnUserCtrl.text = cfg['turn_user'] ?? 'intercom';
         _turnPassCtrl.text = cfg['turn_password'] ?? '';
+        _publicDomainCtrl.text = cfg['public_domain'] ?? '';
+        _lastSyncError = (cfg['last_sync_error'] as String? ?? '').trim();
       });
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error loading config: $e')));
@@ -140,20 +148,51 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   Future<void> _saveServerConfig() async {
     setState(() => _configSaving = true);
     try {
-      await api.updateServerConfig({
+      final result = await api.updateServerConfig({
         'announced_ips': _announcedIps.join(','),
         'turn_host': _turnHostCtrl.text.trim(),
         'turn_port': _turnPortCtrl.text.trim(),
         'turn_user': _turnUserCtrl.text.trim(),
         'turn_password': _turnPassCtrl.text,
+        'public_domain': _publicDomainCtrl.text.trim(),
       });
+      // Backend returns `sync: { coturn: 'queued'|'skipped', nginx: ... }`.
+      // Build a human-friendly summary for the SnackBar.
+      final sync = result['sync'] as Map<String, dynamic>?;
+      final coturn = sync?['coturn'] ?? 'skipped';
+      final nginx = sync?['nginx'] ?? 'skipped';
+      final parts = <String>[];
+      if (coturn == 'queued') parts.add('coturn');
+      if (nginx == 'queued') parts.add('nginx');
+      final tail = parts.isEmpty
+          ? 'No infra changes were needed.'
+          : 'Recreating: ${parts.join(', ')}.';
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Configuration saved. Reconnect clients to apply.'), backgroundColor: Colors.green),
+        SnackBar(
+          content: Text('Configuration saved. $tail'),
+          backgroundColor: Colors.green,
+        ),
       );
+      // Refresh after a short delay so the user sees the new
+      // last_sync_error if the background sync failed.
+      Future<void>.delayed(const Duration(seconds: 4), () {
+        if (mounted) _loadServerConfig();
+      });
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
     } finally {
       setState(() => _configSaving = false);
+    }
+  }
+
+  Future<void> _dismissSyncError() async {
+    try {
+      await api.clearServerConfigSyncError();
+      if (mounted) setState(() => _lastSyncError = '');
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not clear: $e')),
+      );
     }
   }
 
@@ -207,8 +246,58 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
           return ca.compareTo(cb);
         });
         break;
+      case UserSortMode.byGroup:
+        // Sorting is handled in the rendering code (one user can appear in
+        // several groups), so here we just default to alphabetical.
+        list.sort((a, b) => ((a['display_name'] ?? a['username']) as String)
+            .toLowerCase()
+            .compareTo(((b['display_name'] ?? b['username']) as String).toLowerCase()));
+        break;
     }
     return list;
+  }
+
+  /// Build a synthetic flat list of (groupName, user) entries used by the
+  /// "Sort by group" mode. A user that belongs to N groups appears N times,
+  /// once under each group header. Users with no group are placed under a
+  /// trailing `(No group)` section so they don't get lost.
+  List<_UserGroupEntry> _entriesByGroup(List<dynamic> users) {
+    final groupedByName = <String, List<dynamic>>{};
+    final orphans = <dynamic>[];
+    for (final u in users) {
+      final groups = (u['groups'] as List?) ?? const [];
+      if (groups.isEmpty) {
+        orphans.add(u);
+      } else {
+        for (final g in groups) {
+          final name = (g['name'] ?? '').toString();
+          groupedByName.putIfAbsent(name, () => <dynamic>[]).add(u);
+        }
+      }
+    }
+    final entries = <_UserGroupEntry>[];
+    final sortedGroupNames = groupedByName.keys.toList()
+      ..sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    for (final gn in sortedGroupNames) {
+      final list = groupedByName[gn]!
+        ..sort((a, b) => ((a['display_name'] ?? a['username']) as String)
+            .toLowerCase()
+            .compareTo(((b['display_name'] ?? b['username']) as String).toLowerCase()));
+      entries.add(_UserGroupEntry.header(gn, list.length));
+      for (final u in list) {
+        entries.add(_UserGroupEntry.user(u));
+      }
+    }
+    if (orphans.isNotEmpty) {
+      orphans.sort((a, b) => ((a['display_name'] ?? a['username']) as String)
+          .toLowerCase()
+          .compareTo(((b['display_name'] ?? b['username']) as String).toLowerCase()));
+      entries.add(_UserGroupEntry.header('(No group)', orphans.length));
+      for (final u in orphans) {
+        entries.add(_UserGroupEntry.user(u));
+      }
+    }
+    return entries;
   }
 
   Widget _buildUsersTab() {
@@ -265,6 +354,10 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                     _sortButton(Icons.sort_by_alpha, 'A-Z', UserSortMode.alphabetical),
                     Container(width: 1, height: 28, color: AppColors.border),
                     _sortButton(Icons.color_lens, 'Color', UserSortMode.byColor),
+                    if (isWeb) ...[
+                      Container(width: 1, height: 28, color: AppColors.border),
+                      _sortButton(Icons.folder_outlined, 'Group', UserSortMode.byGroup),
+                    ],
                   ],
                 ),
               ),
@@ -287,105 +380,610 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
             ],
           ),
         ),
-        // Compact user list
+        // Compact user list — alphabetical/byColor uses a flat list, byGroup
+        // (web-only) interleaves group headers and may repeat a user across
+        // their groups.
         Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
-            itemCount: filteredUsers.length,
-            itemBuilder: (context, i) {
-              final u = filteredUsers[i];
-              final isAdmin = u['role'] == 'admin';
-              final userColor = u['color'] != null ? _hexToColor(u['color']) : null;
-              final isOnline = _onlineUserIds.contains(u['id']);
-              return Container(
-                height: 48,
-                margin: const EdgeInsets.only(bottom: 2),
-                decoration: BoxDecoration(
-                  color: i.isEven ? AppColors.surface : AppColors.backgroundAlt,
-                  borderRadius: BorderRadius.circular(6),
+          child: _userSort == UserSortMode.byGroup && isWeb
+              ? _buildUsersByGroup(filteredUsers)
+              : ListView.builder(
+                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+                  itemCount: filteredUsers.length,
+                  itemBuilder: (context, i) =>
+                      _buildUserRow(filteredUsers[i], i.isEven),
                 ),
-                child: Row(
-                  children: [
-                    const SizedBox(width: 10),
-                    // Color dot + online indicator
-                    Stack(
-                      children: [
-                        Container(
-                          width: 28, height: 28,
-                          decoration: BoxDecoration(
-                            color: (userColor ?? Colors.blue.shade600).withValues(alpha: 0.15),
-                            shape: BoxShape.circle,
-                          ),
-                          child: Icon(
-                            isAdmin ? Icons.admin_panel_settings : Icons.person,
-                            color: userColor ?? (isAdmin ? Colors.orange.shade600 : Colors.blue.shade400),
-                            size: 16,
-                          ),
-                        ),
-                        if (isOnline)
-                          Positioned(
-                            right: 0, bottom: 0,
-                            child: Container(
-                              width: 14, height: 14,
-                              decoration: BoxDecoration(
-                                color: Colors.green,
-                                shape: BoxShape.circle,
-                                border: Border.all(color: AppColors.surface, width: 2),
-                                boxShadow: [BoxShadow(color: Colors.green.withValues(alpha: 0.5), blurRadius: 4)],
-                              ),
-                            ),
-                          ),
-                      ],
-                    ),
-                    const SizedBox(width: 10),
-                    // Name
-                    Expanded(
-                      child: Row(
-                        children: [
-                          Text(
-                            u['display_name'] ?? u['username'],
-                            style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          const SizedBox(width: 8),
-                          Text(
-                            u['username'] ?? '',
-                            style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
-                          ),
-                          const SizedBox(width: 6),
-                          Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
-                            decoration: BoxDecoration(
-                              color: isAdmin ? Colors.orange.withValues(alpha: 0.15) : Colors.blue.withValues(alpha: 0.12),
-                              borderRadius: BorderRadius.circular(3),
-                            ),
-                            child: Text(
-                              u['role'] ?? 'user',
-                              style: TextStyle(
-                                fontSize: 9, fontWeight: FontWeight.bold,
-                                color: isAdmin ? Colors.orange.shade300 : Colors.blue.shade300,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                    // Action icons (compact, no padding)
-                    if (isOnline)
-                      _compactIcon(Icons.power_settings_new, Colors.orange.shade400, 'Disconnect',
-                          () => _kickUser(u['id'], u['display_name'] ?? u['username'])),
-                    _compactIcon(Icons.edit, Colors.blue.shade400, 'Edit',
-                        () => _showEditUserDialog(u)),
-                    _compactIcon(Icons.delete, Colors.red.shade400, 'Delete',
-                        () => _deleteUser(u['id'])),
-                    const SizedBox(width: 6),
-                  ],
-                ),
-              );
-            },
-          ),
         ),
       ],
+    );
+  }
+
+  // Fixed column widths so every row aligns vertically across the list.
+  static const double _kColAvatarW = 38;       // avatar slot
+  static const double _kColPrimaryW = 160;     // display_name (≈18 chars)
+  static const double _kColLoginIdW = 130;     // username used for login (≈15 chars)
+  static const double _kColFullNameW = 180;    // first + last name (≈20 chars)
+  static const double _kColRoleW = 88;         // role badge column
+  static const double _kColActionsWWeb = 220;  // 5 icon buttons
+  static const double _kColActionsWNative = 132; // 3 icon buttons
+
+  /// Render the user row used by both the flat list and the byGroup view.
+  /// Responsive: when the row is wide enough (≥ 700 px) we render the
+  /// fixed-column layout; on narrow screens (phones) we collapse to a
+  /// two-line compact card so everything stays readable.
+  /// The primary label uses `first_name` when set, falling back to
+  /// `display_name`.
+  Widget _buildUserRow(Map<String, dynamic> u, bool zebraEven, {String? hintGroup}) {
+    return LayoutBuilder(builder: (context, constraints) {
+      if (constraints.maxWidth < 700) {
+        return _buildUserRowCompact(u, zebraEven);
+      }
+      return _buildUserRowWide(u, zebraEven, hintGroup: hintGroup);
+    });
+  }
+
+  /// Narrow-screen layout (phones): two-line card so display name, login id,
+  /// real name and the action icons all fit comfortably without horizontal
+  /// scroll.
+  Widget _buildUserRowCompact(Map<String, dynamic> u, bool zebraEven) {
+    final isAdmin = u['role'] == 'admin';
+    final userColor = u['color'] != null ? _hexToColor(u['color']) : null;
+    final isOnline = _onlineUserIds.contains(u['id']);
+    final firstName = (u['first_name'] as String?)?.trim() ?? '';
+    final lastName = (u['last_name'] as String?)?.trim() ?? '';
+    final displayName = (u['display_name'] as String?)?.trim() ?? '';
+    final username = (u['username'] as String?) ?? '';
+    final primary = displayName.isNotEmpty ? displayName : username;
+    final fullName = ('$firstName $lastName').trim();
+
+    return Container(
+      margin: const EdgeInsets.only(bottom: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: zebraEven ? AppColors.surface : AppColors.backgroundAlt,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Line 1: avatar + display name + role + edit/delete/kick
+          Row(
+            children: [
+              Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Container(
+                    width: 32, height: 32,
+                    decoration: BoxDecoration(
+                      color: (userColor ?? Colors.blue.shade600)
+                          .withValues(alpha: 0.15),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      isAdmin ? Icons.admin_panel_settings : Icons.person,
+                      color: userColor ??
+                          (isAdmin ? Colors.orange.shade600 : Colors.blue.shade400),
+                      size: 18,
+                    ),
+                  ),
+                  if (isOnline)
+                    Positioned(
+                      right: -1, bottom: -1,
+                      child: Container(
+                        width: 11, height: 11,
+                        decoration: BoxDecoration(
+                          color: Colors.green,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: AppColors.surface, width: 2),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  primary,
+                  style: const TextStyle(
+                      fontSize: 16, fontWeight: FontWeight.w600),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: isAdmin
+                      ? Colors.orange.withValues(alpha: 0.15)
+                      : Colors.blue.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  u['role'] ?? 'user',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    color: isAdmin
+                        ? Colors.orange.shade300
+                        : Colors.blue.shade300,
+                  ),
+                ),
+              ),
+              if (isOnline)
+                _compactIcon(Icons.power_settings_new, Colors.orange.shade400,
+                    'Disconnect',
+                    () => _kickUser(u['id'], u['display_name'] ?? u['username'])),
+              _compactIcon(Icons.edit, Colors.blue.shade400, 'Edit',
+                  () => _showEditUserDialog(u)),
+              _compactIcon(Icons.delete, Colors.red.shade400, 'Delete',
+                  () => _deleteUser(u['id'])),
+            ],
+          ),
+          // Line 2: User Id (monospace) + full real name
+          Padding(
+            padding: const EdgeInsets.only(left: 42, top: 2),
+            child: Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    username,
+                    style: TextStyle(
+                      fontSize: 12,
+                      fontFamily: 'monospace',
+                      color: Colors.grey.shade400,
+                    ),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                if (fullName.isNotEmpty) ...[
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(
+                      '• $fullName',
+                      style: TextStyle(
+                          fontSize: 12, color: Colors.grey.shade500),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Wide-screen layout (web/tablet): everything in one row with fixed-width
+  /// columns so rows align vertically.
+  Widget _buildUserRowWide(Map<String, dynamic> u, bool zebraEven,
+      {String? hintGroup}) {
+    final isAdmin = u['role'] == 'admin';
+    final userColor = u['color'] != null ? _hexToColor(u['color']) : null;
+    final isOnline = _onlineUserIds.contains(u['id']);
+    final groups = (u['groups'] as List?) ?? const [];
+    final firstName = (u['first_name'] as String?)?.trim() ?? '';
+    final lastName = (u['last_name'] as String?)?.trim() ?? '';
+    final displayName = (u['display_name'] as String?)?.trim() ?? '';
+    final username = (u['username'] as String?) ?? '';
+    final primary = displayName.isNotEmpty ? displayName : username;
+    final fullName = ('$firstName $lastName').trim();
+
+    return Container(
+      height: 44,
+      margin: const EdgeInsets.only(bottom: 2),
+      decoration: BoxDecoration(
+        color: zebraEven ? AppColors.surface : AppColors.backgroundAlt,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Row(
+        children: [
+          // ---- Avatar column ----
+          SizedBox(
+            width: _kColAvatarW,
+            child: Center(
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Container(
+                    width: 28, height: 28,
+                    decoration: BoxDecoration(
+                      color: (userColor ?? Colors.blue.shade600).withValues(alpha: 0.15),
+                      shape: BoxShape.circle,
+                    ),
+                    child: Icon(
+                      isAdmin ? Icons.admin_panel_settings : Icons.person,
+                      color: userColor ??
+                          (isAdmin ? Colors.orange.shade600 : Colors.blue.shade400),
+                      size: 16,
+                    ),
+                  ),
+                  if (isOnline)
+                    Positioned(
+                      right: -2, bottom: -2,
+                      child: Container(
+                        width: 12, height: 12,
+                        decoration: BoxDecoration(
+                          color: Colors.green,
+                          shape: BoxShape.circle,
+                          border: Border.all(color: AppColors.surface, width: 2),
+                          boxShadow: [
+                            BoxShadow(
+                                color: Colors.green.withValues(alpha: 0.5),
+                                blurRadius: 4),
+                          ],
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+          // ---- Display name column ----
+          SizedBox(
+            width: _kColPrimaryW,
+            child: Text(
+              primary,
+              style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          // ---- User Id column — login username (used to authenticate) ----
+          SizedBox(
+            width: _kColLoginIdW,
+            child: Text(
+              username,
+              style: TextStyle(
+                fontSize: 13,
+                fontFamily: 'monospace',
+                color: Colors.grey.shade400,
+              ),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          // ---- Real name column — first_name + last_name ----
+          SizedBox(
+            width: _kColFullNameW,
+            child: Text(
+              fullName,
+              style: TextStyle(fontSize: 14, color: Colors.grey.shade500),
+              overflow: TextOverflow.ellipsis,
+            ),
+          ),
+          // ---- Role column ----
+          SizedBox(
+            width: _kColRoleW,
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: isAdmin
+                      ? Colors.orange.withValues(alpha: 0.15)
+                      : Colors.blue.withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  u['role'] ?? 'user',
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: isAdmin
+                        ? Colors.orange.shade300
+                        : Colors.blue.shade300,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // ---- Actions column (fixed width so chips line up everywhere) ----
+          SizedBox(
+            width: isWeb ? _kColActionsWWeb : _kColActionsWNative,
+            child: Row(
+              children: [
+                if (isWeb)
+                  _compactIcon(Icons.group_add, Colors.purple.shade300,
+                      'Manage groups', () => _showGroupPickerSheet(u)),
+                if (isWeb)
+                  _compactIcon(Icons.share, Colors.teal.shade300,
+                      'Send invite', () => _showShareSheet(u)),
+                _compactIcon(
+                  Icons.power_settings_new,
+                  isOnline ? Colors.orange.shade400 : Colors.grey.shade700,
+                  isOnline ? 'Disconnect' : 'Offline',
+                  isOnline
+                      ? () => _kickUser(
+                          u['id'], u['display_name'] ?? u['username'])
+                      : () {},
+                ),
+                _compactIcon(Icons.edit, Colors.blue.shade400, 'Edit',
+                    () => _showEditUserDialog(u)),
+                _compactIcon(Icons.delete, Colors.red.shade400, 'Delete',
+                    () => _deleteUser(u['id'])),
+              ],
+            ),
+          ),
+          // ---- Group chips (web only): take whatever space is left ----
+          if (isWeb)
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: ClipRect(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: groups.map<Widget>((g) {
+                        final isHint =
+                            hintGroup != null && g['name'] == hintGroup;
+                        return Container(
+                          margin: const EdgeInsets.only(right: 4),
+                          padding: const EdgeInsets.symmetric(
+                              horizontal: 8, vertical: 3),
+                          decoration: BoxDecoration(
+                            color: isHint
+                                ? Colors.teal.withValues(alpha: 0.25)
+                                : Colors.grey.withValues(alpha: 0.18),
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(
+                              color: isHint
+                                  ? Colors.teal.shade400
+                                  : Colors.grey.withValues(alpha: 0.25),
+                              width: 0.5,
+                            ),
+                          ),
+                          child: Text(
+                            g['name'] ?? '',
+                            style: TextStyle(
+                              fontSize: 12,
+                              fontWeight: FontWeight.w600,
+                              color: isHint
+                                  ? Colors.teal.shade200
+                                  : Colors.grey.shade400,
+                            ),
+                          ),
+                        );
+                      }).toList(),
+                    ),
+                  ),
+                ),
+              ),
+            )
+          else
+            const Spacer(),
+        ],
+      ),
+    );
+  }
+
+  /// Render the byGroup list — inserts a section header for every group and
+  /// repeats a user under every group they belong to.
+  Widget _buildUsersByGroup(List<dynamic> users) {
+    final entries = _entriesByGroup(users);
+    return ListView.builder(
+      padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+      itemCount: entries.length,
+      itemBuilder: (context, i) {
+        final e = entries[i];
+        if (e.isHeader) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(4, 12, 4, 6),
+            child: Row(
+              children: [
+                Icon(Icons.folder_open, size: 16, color: Colors.teal.shade300),
+                const SizedBox(width: 6),
+                Text(
+                  '${e.groupName}  (${e.count})',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.bold,
+                    color: Colors.teal.shade200,
+                    letterSpacing: 0.4,
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+        // Find the most recent header to highlight chip in the row.
+        String? hint;
+        for (int j = i - 1; j >= 0; j--) {
+          if (entries[j].isHeader) {
+            hint = entries[j].groupName;
+            break;
+          }
+        }
+        return _buildUserRow(
+            e.user!, i.isEven, hintGroup: hint == '(No group)' ? null : hint);
+      },
+    );
+  }
+
+  /// BottomSheet with a CheckboxListTile per group; toggling instantly
+  /// calls the addGroupMember/removeGroupMember endpoints and refreshes the
+  /// local copy. Web-only.
+  Future<void> _showGroupPickerSheet(Map<String, dynamic> user) async {
+    if (_groups.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+        content: Text('No groups defined yet'),
+      ));
+      return;
+    }
+    final memberOf = <int>{
+      for (final g in (user['groups'] as List? ?? const []))
+        (g['id'] as num).toInt(),
+    };
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) {
+        return StatefulBuilder(builder: (ctx, setSt) {
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    margin: const EdgeInsets.only(bottom: 12),
+                    decoration: BoxDecoration(
+                      color: AppColors.border,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                Text(
+                  'Manage groups for ${user['display_name'] ?? user['username']}',
+                  style: const TextStyle(
+                      fontSize: 15, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 8),
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxHeight: 360),
+                  child: ListView.builder(
+                    shrinkWrap: true,
+                    itemCount: _groups.length,
+                    itemBuilder: (_, i) {
+                      final g = _groups[i];
+                      final gid = g['id'] as int;
+                      final checked = memberOf.contains(gid);
+                      return CheckboxListTile(
+                        dense: true,
+                        title: Text(g['name'] ?? ''),
+                        value: checked,
+                        onChanged: (v) async {
+                          try {
+                            if (v == true) {
+                              await api.addGroupMember(gid, user['id']);
+                              memberOf.add(gid);
+                            } else {
+                              await api.removeGroupMember(gid, user['id']);
+                              memberOf.remove(gid);
+                            }
+                            setSt(() {});
+                            // Refresh master state so chips update behind
+                            // the sheet too.
+                            _loadAll();
+                          } catch (e) {
+                            if (mounted) {
+                              ScaffoldMessenger.of(context).showSnackBar(
+                                SnackBar(content: Text('Error: $e')),
+                              );
+                            }
+                          }
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          );
+        });
+      },
+    );
+  }
+
+  /// Compose the boilerplate text that ships with every invite.
+  String _buildInviteText(Map<String, dynamic> user) {
+    final base = api.baseUrl;
+    final name = user['display_name'] ?? user['username'] ?? 'there';
+    return 'Hi $name,\n\n'
+        "You've been added to Winus Intercom.\n"
+        'Server: $base\n'
+        'Username: ${user['username']}\n'
+        'Download (Android): $base/intercom.apk\n';
+  }
+
+  /// BottomSheet that lets the admin send the invite by email, WhatsApp or
+  /// just copy the text to the clipboard. Web-only.
+  Future<void> _showShareSheet(Map<String, dynamic> user) async {
+    final email = (user['email'] as String?)?.trim() ?? '';
+    final phone = (user['phone'] as String?)?.trim() ?? '';
+    final body = _buildInviteText(user);
+    final subject = 'Winus Intercom invitation';
+
+    await showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: AppColors.surface,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
+      ),
+      builder: (ctx) => Padding(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: AppColors.border,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Text(
+              'Send invite to ${user['display_name'] ?? user['username']}',
+              style: const TextStyle(fontSize: 15, fontWeight: FontWeight.bold),
+            ),
+            const SizedBox(height: 12),
+            ListTile(
+              leading: const Icon(Icons.email_outlined, color: Colors.amber),
+              title: const Text('Send by email'),
+              subtitle: Text(email.isEmpty ? '(no email on file)' : email,
+                  style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
+              enabled: email.isNotEmpty,
+              onTap: email.isEmpty
+                  ? null
+                  : () {
+                      final url = 'mailto:${Uri.encodeComponent(email)}'
+                          '?subject=${Uri.encodeQueryComponent(subject)}'
+                          '&body=${Uri.encodeQueryComponent(body)}';
+                      platformOpenUrl(url);
+                      Navigator.pop(ctx);
+                    },
+            ),
+            ListTile(
+              leading: const Icon(Icons.chat, color: Colors.green),
+              title: const Text('Send via WhatsApp'),
+              subtitle: Text(phone.isEmpty ? '(no phone on file)' : phone,
+                  style: TextStyle(color: Colors.grey.shade400, fontSize: 12)),
+              enabled: phone.isNotEmpty,
+              onTap: phone.isEmpty
+                  ? null
+                  : () {
+                      // wa.me requires digits only (no +/spaces).
+                      final cleaned = phone.replaceAll(RegExp(r'[^0-9]'), '');
+                      final url = 'https://wa.me/$cleaned'
+                          '?text=${Uri.encodeQueryComponent(body)}';
+                      platformOpenUrl(url);
+                      Navigator.pop(ctx);
+                    },
+            ),
+            ListTile(
+              leading: const Icon(Icons.copy, color: Colors.blueAccent),
+              title: const Text('Copy invite text'),
+              onTap: () async {
+                await Clipboard.setData(ClipboardData(text: body));
+                if (context.mounted) {
+                  Navigator.pop(ctx);
+                  ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+                    content: Text('Invite copied to clipboard'),
+                  ));
+                }
+              },
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -394,10 +992,10 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
       message: tooltip,
       child: InkWell(
         onTap: onTap,
-        borderRadius: BorderRadius.circular(4),
+        borderRadius: BorderRadius.circular(6),
         child: Padding(
-          padding: const EdgeInsets.all(6),
-          child: Icon(icon, size: 16, color: color),
+          padding: const EdgeInsets.all(8),
+          child: Icon(icon, size: 22, color: color),
         ),
       ),
     );
@@ -468,6 +1066,10 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     final nameCtrl = TextEditingController();
     final userCtrl = TextEditingController();
     final passCtrl = TextEditingController();
+    final firstCtrl = TextEditingController();
+    final lastCtrl = TextEditingController();
+    final emailCtrl = TextEditingController();
+    final phoneCtrl = TextEditingController();
     String selectedColor = '#2196F3';
     String selectedRole = 'user';
 
@@ -480,9 +1082,25 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Name')),
+                TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Display name')),
                 TextField(controller: userCtrl, decoration: const InputDecoration(labelText: 'Username')),
                 TextField(controller: passCtrl, decoration: const InputDecoration(labelText: 'Password'), obscureText: true),
+                if (isWeb) ...[
+                  const SizedBox(height: 8),
+                  TextField(controller: firstCtrl, decoration: const InputDecoration(labelText: 'First name (optional)')),
+                  TextField(controller: lastCtrl, decoration: const InputDecoration(labelText: 'Last name (optional)')),
+                  TextField(
+                    controller: emailCtrl,
+                    decoration: const InputDecoration(labelText: 'Email (optional)'),
+                    keyboardType: TextInputType.emailAddress,
+                  ),
+                  TextField(
+                    controller: phoneCtrl,
+                    decoration: const InputDecoration(
+                        labelText: 'Phone (optional, for WhatsApp invite)'),
+                    keyboardType: TextInputType.phone,
+                  ),
+                ],
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   value: selectedRole,
@@ -509,13 +1127,20 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     );
 
     if (result == true) {
-      await api.createUser({
+      final body = <String, dynamic>{
         'display_name': nameCtrl.text,
         'username': userCtrl.text,
         'password': passCtrl.text,
         'role': selectedRole,
         'color': selectedColor,
-      });
+      };
+      if (isWeb) {
+        body['first_name'] = firstCtrl.text;
+        body['last_name'] = lastCtrl.text;
+        body['email'] = emailCtrl.text;
+        body['phone'] = phoneCtrl.text;
+      }
+      await api.createUser(body);
       _loadAll();
     }
   }
@@ -523,8 +1148,14 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   Future<void> _showEditUserDialog(Map<String, dynamic> user) async {
     final nameCtrl = TextEditingController(text: user['display_name']);
     final passCtrl = TextEditingController();
+    final firstCtrl = TextEditingController(text: user['first_name'] ?? '');
+    final lastCtrl = TextEditingController(text: user['last_name'] ?? '');
+    final emailCtrl = TextEditingController(text: user['email'] ?? '');
+    final phoneCtrl = TextEditingController(text: user['phone'] ?? '');
+    final usernameCtrl = TextEditingController(text: user['username'] ?? '');
     String selectedColor = user['color'] ?? '#2196F3';
     String selectedRole = user['role'] ?? 'user';
+    final isSuperadmin = context.read<AuthProvider>().user?['role'] == 'superadmin';
 
     final result = await showDialog<bool>(
       context: context,
@@ -535,12 +1166,52 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Name')),
+                // Username (User Id): read-only for everyone except the
+                // hidden superadmin (Winus), who can rename it.
+                TextField(
+                  enabled: isSuperadmin,
+                  controller: usernameCtrl,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 13),
+                  decoration: InputDecoration(
+                    labelText: isSuperadmin
+                        ? 'User Id (login — superadmin can rename)'
+                        : 'User Id (login — cannot be changed)',
+                  ),
+                ),
+                if (isSuperadmin)
+                  Align(
+                    alignment: Alignment.centerLeft,
+                    child: TextButton.icon(
+                      icon: const Icon(Icons.tag, size: 16),
+                      label: Text(
+                          'Change numeric ID (current: ${user['id']})',
+                          style: const TextStyle(fontSize: 12)),
+                      onPressed: () => _showChangeIdDialog(user),
+                    ),
+                  ),
+                const SizedBox(height: 6),
+                TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Display name')),
                 TextField(
                   controller: passCtrl,
                   decoration: const InputDecoration(labelText: 'Password (empty = no change)'),
                   obscureText: true,
                 ),
+                if (isWeb) ...[
+                  const SizedBox(height: 8),
+                  TextField(controller: firstCtrl, decoration: const InputDecoration(labelText: 'First name (optional)')),
+                  TextField(controller: lastCtrl, decoration: const InputDecoration(labelText: 'Last name (optional)')),
+                  TextField(
+                    controller: emailCtrl,
+                    decoration: const InputDecoration(labelText: 'Email (optional)'),
+                    keyboardType: TextInputType.emailAddress,
+                  ),
+                  TextField(
+                    controller: phoneCtrl,
+                    decoration: const InputDecoration(
+                        labelText: 'Phone (optional, for WhatsApp invite)'),
+                    keyboardType: TextInputType.phone,
+                  ),
+                ],
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   value: selectedRole,
@@ -573,8 +1244,87 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         'color': selectedColor,
       };
       if (passCtrl.text.isNotEmpty) data['password'] = passCtrl.text;
-      await api.updateUser(user['id'], data);
+      if (isWeb) {
+        data['first_name'] = firstCtrl.text;
+        data['last_name'] = lastCtrl.text;
+        data['email'] = emailCtrl.text;
+        data['phone'] = phoneCtrl.text;
+      }
+      try {
+        await api.updateUser(user['id'], data);
+        // Superadmin: if username changed, push it through the dedicated
+        // endpoint after the regular update so other admins see the change.
+        if (isSuperadmin) {
+          final newUsername = usernameCtrl.text.trim();
+          if (newUsername.isNotEmpty &&
+              newUsername != (user['username'] ?? '')) {
+            await api.updateUserUsername(user['id'], newUsername);
+          }
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Error: $e')));
+        }
+      }
       _loadAll();
+    }
+  }
+
+  /// Show a confirmation dialog to change the numeric id of a user.
+  /// Superadmin only — calls the dedicated /change-id endpoint that
+  /// cascades the new id through every FK-reference table on the server.
+  Future<void> _showChangeIdDialog(Map<String, dynamic> user) async {
+    final ctrl = TextEditingController(text: '${user['id']}');
+    final newId = await showDialog<int?>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: Text('Change numeric ID of ${user['username']}'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This will rewrite the user id and cascade it through '
+              'permissions, group memberships and device tokens. Use with care.',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: ctrl,
+              keyboardType: TextInputType.number,
+              decoration: const InputDecoration(labelText: 'New numeric ID'),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+              onPressed: () => Navigator.pop(ctx, null),
+              child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(
+                ctx, int.tryParse(ctrl.text.trim())),
+            child: const Text('Change'),
+          ),
+        ],
+      ),
+    );
+    if (newId == null) return;
+    try {
+      await api.changeUserId(user['id'] as int, newId);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('ID changed to $newId')),
+        );
+      }
+      _loadAll();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Error: $e')),
+        );
+      }
     }
   }
 
@@ -766,18 +1516,10 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     );
 
     if (userId != null) {
+      // Backend now handles the bidirectional permission matrix and the
+      // group_permissions row in a single transaction. The frontend just
+      // adds the membership and refreshes.
       await api.addGroupMember(group['id'], userId);
-      // Auto-grant talk permission to the group
-      await api.setGroupPermission(userId, group['id'], true);
-      // Auto-grant bidirectional user-to-user permissions with all existing members
-      final existingMembers = (group['members'] as List? ?? [])
-          .map((m) => m['id'] as int)
-          .where((id) => id != userId)
-          .toList();
-      for (final memberId in existingMembers) {
-        await api.setPermission(userId, memberId, true);  // new → existing
-        await api.setPermission(memberId, userId, true);  // existing → new
-      }
       _loadAll();
     }
   }
@@ -1225,6 +1967,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     return ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        // ---- Last sync error banner (only when present) ----
+        if (_lastSyncError.isNotEmpty) _syncErrorBanner(),
         // ---- Announced IPs ----
         _settingsSection(
           icon: Icons.router,
@@ -1322,7 +2066,30 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
             ],
           ),
         ),
-        const SizedBox(height: 24),
+        const SizedBox(height: 16),
+        // ---- Public domain ----
+        _settingsSection(
+          icon: Icons.language,
+          title: 'Public Domain (TLS)',
+          subtitle:
+              'Optional DNS name to embed in the self-signed certificate '
+              '(e.g. winus.overon.es). Saving rebuilds the cert and recreates nginx.',
+          child: _settingsField(
+            controller: _publicDomainCtrl,
+            label: 'Public domain',
+            hint: 'leave empty if you only use IPs',
+          ),
+        ),
+        const SizedBox(height: 8),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Text(
+            'Saving rewrites .env (EXTERNAL_IP / LOCAL_IP / MEDIASOUP_ANNOUNCED_IPS) '
+            'and recreates the coturn / nginx containers automatically.',
+            style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+          ),
+        ),
+        const SizedBox(height: 16),
         SizedBox(
           width: double.infinity,
           child: ElevatedButton.icon(
@@ -1382,7 +2149,6 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   }
 
   Future<void> _exportConfig() async {
-    // Ask for filename
     final nameCtrl = TextEditingController(
       text: 'winus-config-${DateTime.now().toString().substring(0, 10)}',
     );
@@ -1412,56 +2178,140 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
 
     try {
       final data = await api.exportConfig();
-      final json = const JsonEncoder.withIndent('  ').convert(data);
+      final jsonStr = const JsonEncoder.withIndent('  ').convert(data);
       final finalName = filename.endsWith('.txt') ? filename : '$filename.txt';
 
-      // Copy to clipboard + show confirmation
-      await Clipboard.setData(ClipboardData(text: json));
-      if (!mounted) return;
-
-      // On web: trigger file download via platform
-      platformDownloadFile(finalName, json);
-
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Config exported as $finalName (also copied to clipboard)'), backgroundColor: Colors.green),
-      );
+      if (isWeb) {
+        // Web: trigger browser download
+        platformDownloadFile(finalName, jsonStr);
+        await Clipboard.setData(ClipboardData(text: jsonStr));
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Downloaded $finalName'), backgroundColor: Colors.green),
+          );
+        }
+      } else {
+        // Native: save to Downloads folder
+        final path = await platformSaveTextFile(finalName, jsonStr);
+        if (mounted) {
+          if (path != null) {
+            ScaffoldMessenger.of(context).showSnackBar(
+              SnackBar(content: Text('Saved to $path'), backgroundColor: Colors.green, duration: const Duration(seconds: 4)),
+            );
+          } else {
+            // Fallback: copy to clipboard
+            await Clipboard.setData(ClipboardData(text: jsonStr));
+            ScaffoldMessenger.of(context).showSnackBar(
+              const SnackBar(content: Text('Could not save file. Copied to clipboard instead.'), backgroundColor: Colors.orange),
+            );
+          }
+        }
+      }
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Export error: $e')));
     }
   }
 
   Future<void> _importConfig() async {
-    final ctrl = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Import Configuration'),
-        content: SizedBox(
-          width: 400, height: 300,
-          child: TextField(
-            controller: ctrl,
-            maxLines: null,
-            expands: true,
-            style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
-            decoration: const InputDecoration(
-              hintText: 'Paste the content of a .txt config file here...',
-              border: OutlineInputBorder(),
+    String? jsonText;
+
+    if (!isWeb) {
+      // Native: ask for filename in Downloads folder
+      final pathCtrl = TextEditingController(text: '/sdcard/Download/winus-config-');
+      final path = await showDialog<String>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Import Configuration'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('Enter the path to the .txt config file:', style: TextStyle(fontSize: 13)),
+              const SizedBox(height: 12),
+              TextField(
+                controller: pathCtrl,
+                style: const TextStyle(fontSize: 13, fontFamily: 'monospace'),
+                decoration: const InputDecoration(
+                  labelText: 'File path',
+                  hintText: '/sdcard/Download/winus-config-2025-05-05.txt',
+                  border: OutlineInputBorder(),
+                ),
+                autofocus: true,
+              ),
+              const SizedBox(height: 12),
+              TextButton.icon(
+                icon: const Icon(Icons.content_paste, size: 16),
+                label: const Text('Or paste from clipboard'),
+                onPressed: () async {
+                  final clip = await Clipboard.getData(Clipboard.kTextPlain);
+                  if (clip?.text != null && clip!.text!.isNotEmpty) {
+                    Navigator.pop(ctx, '__clipboard__');
+                  }
+                },
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, pathCtrl.text.trim()),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+              child: const Text('Import'),
+            ),
+          ],
+        ),
+      );
+      if (path == null || path.isEmpty) return;
+
+      if (path == '__clipboard__') {
+        final clip = await Clipboard.getData(Clipboard.kTextPlain);
+        jsonText = clip?.text;
+      } else {
+        jsonText = await platformReadTextFile(path);
+        if (jsonText == null && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('File not found: $path')),
+          );
+          return;
+        }
+      }
+    } else {
+      // Web: paste textarea (existing behavior)
+      final ctrl = TextEditingController();
+      final ok = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Import Configuration'),
+          content: SizedBox(
+            width: 400, height: 300,
+            child: TextField(
+              controller: ctrl,
+              maxLines: null,
+              expands: true,
+              style: const TextStyle(fontSize: 11, fontFamily: 'monospace'),
+              decoration: const InputDecoration(
+                hintText: 'Paste the exported .txt content here...',
+                border: OutlineInputBorder(),
+              ),
             ),
           ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            ElevatedButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
+              child: const Text('Import (replaces all data)'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(backgroundColor: Colors.orange),
-            child: const Text('Import (replaces all data)'),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || ctrl.text.isEmpty) return;
+      );
+      if (ok != true || ctrl.text.isEmpty) return;
+      jsonText = ctrl.text;
+    }
+
+    if (jsonText == null || jsonText.isEmpty) return;
     try {
-      final data = jsonDecode(ctrl.text) as Map<String, dynamic>;
+      final data = jsonDecode(jsonText) as Map<String, dynamic>;
       final result = await api.importConfig(data);
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -1512,6 +2362,59 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
             child,
           ],
         ),
+      ),
+    );
+  }
+
+  /// Banner shown above the Settings tab when the backend's last
+  /// infra-sync (writeEnv / regenerateCerts / docker compose up) failed.
+  /// Lets the operator see what went wrong without having to dig through
+  /// docker logs and dismiss the warning once acknowledged.
+  Widget _syncErrorBanner() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: Colors.red.shade900.withValues(alpha: 0.18),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.red.shade400.withValues(alpha: 0.6)),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.error_outline, color: Colors.red.shade300, size: 22),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Last infra-sync failed',
+                  style: TextStyle(
+                    fontWeight: FontWeight.bold,
+                    color: Colors.red.shade200,
+                    fontSize: 13,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                SelectableText(
+                  _lastSyncError,
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Colors.red.shade100,
+                    fontFamily: 'monospace',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 18),
+            color: Colors.red.shade200,
+            tooltip: 'Dismiss',
+            onPressed: _dismissSyncError,
+          ),
+        ],
       ),
     );
   }
@@ -1719,6 +2622,24 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   }
 }
 
+/// Lightweight value object used by the byGroup view: every entry is either
+/// a section header (`isHeader=true`) or a user under that header.
+class _UserGroupEntry {
+  final bool isHeader;
+  final String groupName;
+  final int count;
+  final Map<String, dynamic>? user;
+
+  _UserGroupEntry.header(this.groupName, this.count)
+      : isHeader = true,
+        user = null;
+  _UserGroupEntry.user(Map<String, dynamic> u)
+      : isHeader = false,
+        groupName = '',
+        count = 0,
+        user = u;
+}
+
 /// Dante Controller style matrix with crosshair hover highlight.
 class _DanteMatrix extends StatefulWidget {
   final List<dynamic> rowItems;
@@ -1863,12 +2784,24 @@ class _DanteMatrixState extends State<_DanteMatrix> {
 
             final checked = widget.isChecked(row, col);
             final cellBg = isCrosshair ? _highlight : null;
+            final rowName = widget.rowLabel(row);
+            final colName = widget.colLabel(col);
+            final tooltipText = '$rowName → $colName';
 
-            return MouseRegion(
-              onEnter: (_) => setState(() { _hoverRow = idx; _hoverCol = colIdx; }),
-              child: GestureDetector(
-                onTap: () => widget.onToggle(row, col, !checked),
-                child: Container(
+            return Tooltip(
+              message: tooltipText,
+              waitDuration: const Duration(milliseconds: 300),
+              textStyle: const TextStyle(fontSize: 12, color: Colors.white),
+              decoration: BoxDecoration(
+                color: const Color(0xDD1A1A2E),
+                borderRadius: BorderRadius.circular(6),
+                border: Border.all(color: _teal, width: 0.5),
+              ),
+              child: MouseRegion(
+                onEnter: (_) => setState(() { _hoverRow = idx; _hoverCol = colIdx; }),
+                child: GestureDetector(
+                  onTap: () => widget.onToggle(row, col, !checked),
+                  child: Container(
                   width: cellSize,
                   height: cellSize,
                   decoration: BoxDecoration(
@@ -1892,6 +2825,7 @@ class _DanteMatrixState extends State<_DanteMatrix> {
                             : null,
                       ),
                     ),
+                  ),
                   ),
                 ),
               ),

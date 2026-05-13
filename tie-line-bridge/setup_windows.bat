@@ -22,7 +22,7 @@ echo. >> "%LOG%"
 
 echo.
 echo ============================================
-echo    TieLine Bridge v3.2.2 - Windows Installer
+echo    TieLine Bridge v3.3.0 - Windows Installer
 echo ============================================
 echo    (Log: install.log)
 echo.

@@ -31,7 +31,7 @@ fi
 
 clear
 echo "╔══════════════════════════════════════════╗"
-echo "║   Tie Line Bridge v3.2.2 — Linux          ║"
+echo "║   Tie Line Bridge v3.3.0 — Linux          ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 

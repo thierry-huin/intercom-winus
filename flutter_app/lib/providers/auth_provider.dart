@@ -13,7 +13,11 @@ class AuthProvider extends ChangeNotifier {
 
   Map<String, dynamic>? get user => _user;
   bool get isLoggedIn => _user != null;
-  bool get isAdmin => _user?['role'] == 'admin' || _user?['role'] == 'superuser';
+  bool get isAdmin {
+    final r = _user?['role'];
+    return r == 'admin' || r == 'superuser' || r == 'superadmin';
+  }
+  bool get isSuperadmin => _user?['role'] == 'superadmin';
   String? get token => api.token;
   bool get loading => _loading;
   String? get error => _error;

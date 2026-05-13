@@ -33,28 +33,57 @@ fi
 echo -e "  ${GREEN}✓${NC} Docker OK"
 
 # ---- 2. SSL certificate ----
-echo -e "${CYAN}[2/5]${NC} Generating SSL certificate..."
+# NOTE: the SSL cert is now generated AFTER the network prompt below, so it
+# can include EXTERNAL_IP / PUBLIC_DOMAIN in its SAN list. This block only
+# leaves the directory ready.
 CERT_DIR="$INSTALL_DIR/nginx/certs"
 mkdir -p "$CERT_DIR"
-if [ ! -f "$CERT_DIR/cert.pem" ]; then
-    LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "127.0.0.1")
-    openssl req -x509 -newkey rsa:2048 -keyout "$CERT_DIR/key.pem" -out "$CERT_DIR/cert.pem" \
-        -days 3650 -nodes -subj "/CN=Winus Intercom" \
-        -addext "subjectAltName=IP:$LAN_IP,IP:127.0.0.1" 2>/dev/null
-    echo -e "  ${GREEN}✓${NC} Certificate generated for $LAN_IP"
-else
-    echo -e "  ${GREEN}✓${NC} Certificate already exists"
-fi
 
-# ---- 3. Detect IPs ----
+# ---- 3. Detect IPs + prompt ----
 echo -e "${CYAN}[3/5]${NC} Configuring network..."
 LAN_IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null || echo "127.0.0.1")
 ZT_IP=$(ifconfig 2>/dev/null | grep -A2 'zt' | grep 'inet ' | awk '{print $2}' | head -1)
 WG_IP=$(ifconfig 2>/dev/null | grep -A2 'utun' | grep 'inet ' | grep '10\.' | awk '{print $2}' | head -1)
+PUBLIC_IP="$(curl -fsS --max-time 3 https://api.ipify.org 2>/dev/null || true)"
 
-ANNOUNCED="${LAN_IP}"
-[ -n "$ZT_IP" ] && ANNOUNCED="$ANNOUNCED,$ZT_IP"
-[ -n "$WG_IP" ] && [ "$WG_IP" != "$LAN_IP" ] && ANNOUNCED="$ANNOUNCED,$WG_IP"
+AUTO_ANNOUNCED="${LAN_IP}"
+[ -n "$ZT_IP" ] && AUTO_ANNOUNCED="$AUTO_ANNOUNCED,$ZT_IP"
+[ -n "$WG_IP" ] && [ "$WG_IP" != "$LAN_IP" ] && AUTO_ANNOUNCED="$AUTO_ANNOUNCED,$WG_IP"
+
+DEFAULT_EXTERNAL="${PUBLIC_IP:-$LAN_IP}"
+DEFAULT_LOCAL="${LAN_IP}"
+DEFAULT_ANNOUNCED="${DEFAULT_EXTERNAL}"
+[ -n "$LAN_IP" ] && [ "$LAN_IP" != "$DEFAULT_EXTERNAL" ] && DEFAULT_ANNOUNCED="$DEFAULT_EXTERNAL,$LAN_IP"
+DEFAULT_DOMAIN=""
+
+INTERACTIVE=no
+if [ -t 0 ] && [ -t 1 ]; then INTERACTIVE=yes; fi
+
+ask() {
+    local __var="$1"; local __prompt="$2"; local __default="$3"; local __answer=""
+    if [ "$INTERACTIVE" = "yes" ]; then
+        if [ -n "$__default" ]; then
+            read -r -p "  $__prompt [$__default]: " __answer </dev/tty || __answer=""
+        else
+            read -r -p "  $__prompt: " __answer </dev/tty || __answer=""
+        fi
+    fi
+    [ -z "$__answer" ] && __answer="$__default"
+    eval "$__var=\"\$__answer\""
+}
+
+if [ "$INTERACTIVE" = "yes" ]; then
+    echo ""
+    echo "─────────────────────────────────────────────"
+    echo " Winus Intercom — server network configuration"
+    echo "─────────────────────────────────────────────"
+    echo "Press Enter to accept the default shown in brackets."
+    echo ""
+fi
+ask EXTERNAL_IP "Public IP or domain clients will use (EXTERNAL_IP)" "$DEFAULT_EXTERNAL"
+ask LOCAL_IP    "Local/private IP of this server (LOCAL_IP)"         "$DEFAULT_LOCAL"
+ask MEDIASOUP_ANNOUNCED_IPS "Mediasoup announced IPs (comma-separated)" "$DEFAULT_ANNOUNCED"
+ask PUBLIC_DOMAIN "Optional public domain (Enter to skip)" "$DEFAULT_DOMAIN"
 
 JWT_SECRET=$(openssl rand -hex 32)
 cat > "$INSTALL_DIR/.env" << ENVEOF
@@ -65,13 +94,31 @@ HTTP_PORT=8180
 HTTPS_PORT=8443
 TURN_PASSWORD=intercom2024
 TURN_USER=intercom
-MEDIASOUP_ANNOUNCED_IPS=$ANNOUNCED
-EXTERNAL_IP=$LAN_IP
-LOCAL_IP=$LAN_IP
+MEDIASOUP_ANNOUNCED_IPS=$MEDIASOUP_ANNOUNCED_IPS
+EXTERNAL_IP=$EXTERNAL_IP
+LOCAL_IP=$LOCAL_IP
+PUBLIC_DOMAIN=$PUBLIC_DOMAIN
 ENVEOF
-echo -e "  ${GREEN}✓${NC} Announced IPs: $ANNOUNCED"
+echo -e "  ${GREEN}✓${NC} Announced IPs: $MEDIASOUP_ANNOUNCED_IPS"
 
-# ---- 4. Directories ----
+# ---- 4. SSL certificate (now that we know EXTERNAL_IP/DOMAIN) + dirs ----
+if [ ! -f "$CERT_DIR/cert.pem" ]; then
+    SAN="IP:${LOCAL_IP},IP:127.0.0.1"
+    if [ -n "$EXTERNAL_IP" ] && [ "$EXTERNAL_IP" != "$LOCAL_IP" ]; then
+        if echo "$EXTERNAL_IP" | grep -qE '^[0-9.]+$'; then
+            SAN="$SAN,IP:${EXTERNAL_IP}"
+        else
+            SAN="$SAN,DNS:${EXTERNAL_IP}"
+        fi
+    fi
+    if [ -n "$PUBLIC_DOMAIN" ] && [ "$PUBLIC_DOMAIN" != "$EXTERNAL_IP" ]; then
+        SAN="$SAN,DNS:${PUBLIC_DOMAIN}"
+    fi
+    openssl req -x509 -newkey rsa:2048 -keyout "$CERT_DIR/key.pem" -out "$CERT_DIR/cert.pem" \
+        -days 3650 -nodes -subj "/CN=${EXTERNAL_IP:-Winus Intercom}" \
+        -addext "subjectAltName=${SAN}" 2>/dev/null
+    echo -e "  ${GREEN}✓${NC} Certificate generated (SAN: ${SAN})"
+fi
 mkdir -p "$INSTALL_DIR/backend/db" "$INSTALL_DIR/nginx/downloads"
 
 # ---- 5. Build and start ----
@@ -99,6 +146,24 @@ cd "$(dirname "\$0")"
 bash start-intercom-mac.sh
 CMDEOF
 chmod +x "$INSTALL_DIR/WinusIntercom.command"
+
+# Control Center (admin GUI). Requires Python 3 with tkinter. Mac stock
+# Python doesn't include tkinter — if missing, point the user to
+# `brew install python-tk@3.x` instead of failing the whole install.
+if [ -d "$INSTALL_DIR/control_center" ]; then
+    chmod +x "$INSTALL_DIR/control_center/launch.sh" 2>/dev/null || true
+    cat > "$INSTALL_DIR/WinusControlCenter.command" << CMDEOF
+#!/bin/bash
+cd "\$(dirname "\$0")"
+if ! python3 -c 'import tkinter' 2>/dev/null; then
+    osascript -e 'display dialog "Tkinter is missing.\nInstall Python with tkinter, e.g.:\n  brew install python-tk@3.12" buttons {"OK"}'
+    exit 1
+fi
+bash control_center/launch.sh
+CMDEOF
+    chmod +x "$INSTALL_DIR/WinusControlCenter.command"
+    echo -e "  ${GREEN}✓${NC} Control Center launcher: WinusControlCenter.command"
+fi
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════╗${NC}"

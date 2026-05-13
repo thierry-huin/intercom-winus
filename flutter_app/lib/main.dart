@@ -7,7 +7,7 @@ import 'providers/intercom_provider.dart';
 import 'screens/login_screen.dart';
 import 'screens/intercom_screen.dart';
 import 'screens/admin_screen.dart';
-import 'screens/server_config_screen.dart';
+import 'screens/manual_screen.dart';
 import 'platform/platform_utils.dart';
 import 'theme/app_theme.dart';
 
@@ -89,14 +89,12 @@ class _IntercomAppState extends State<IntercomApp> {
         title: 'Winus Intercom',
         debugShowCheckedModeBanner: false,
         theme: buildAppTheme(),
-        initialRoute: isWeb ? '/' : (_hasServerUrl ? '/' : '/server_config'),
+        initialRoute: '/',
         routes: {
-          '/': (_) => const LoginScreen(),
+          '/': (_) => LoginScreen(onServerChanged: _onServerConfigured),
           '/intercom': (_) => const IntercomScreen(),
           '/admin': (_) => const AdminScreen(),
-          '/server_config': (_) => ServerConfigScreen(
-                onConfigured: _onServerConfigured,
-              ),
+          '/manual': (_) => const ManualScreen(),
         },
       ),
     );

@@ -1,0 +1,9 @@
+{
+  "server": "",
+  "input_device": "",
+  "output_device": "",
+  "bridge_ip": "",
+  "num_device_channels": 16,
+  "sample_rate": 48000,
+  "channels": []
+}

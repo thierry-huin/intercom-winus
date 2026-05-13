@@ -318,7 +318,10 @@ async function createPlainTransport(userId, direction) {
       announcedAddress: announcedIp,
     },
     rtcpMux: true,
-    comedia: direction === 'send',
+    // Comedia on both directions so mediasoup learns the bridge's NAT'd
+    // endpoint from the first incoming packet. The bridge fires a periodic
+    // tiny RTCP keepalive from its RX socket to open/maintain the mapping.
+    comedia: true,
   });
 
   transport.on('tuple', (tuple) => {

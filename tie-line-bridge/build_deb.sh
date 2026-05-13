@@ -7,7 +7,7 @@
 
 set -e
 
-VERSION="3.2.2"
+VERSION="3.3.0.$(date +%Y%m%d.%H%M)"
 PKG_NAME="tieline-bridge"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/build/${PKG_NAME}_${VERSION}_all"
@@ -113,8 +113,14 @@ for f in bridge.py bridge_gui.py audio_engine.py channel.py opus_codec.py rtp_ha
 done
 chmod +x "$BUILD_DIR/opt/tieline-bridge/config_wizard.sh"
 
-# Default config (won't overwrite existing via dpkg conffiles)
-if [ -f "$SCRIPT_DIR/config.json" ]; then
+# Default config (won't overwrite existing via dpkg conffiles).
+# We ship a CLEAN default (empty server, no channels) instead of the
+# dev config.json that may contain a hardcoded 127.0.0.1 server, MTX
+# users, mic devices, etc. — each new install must fill in its own
+# server URL via the GUI.
+if [ -f "$SCRIPT_DIR/config.default.json" ]; then
+    cp "$SCRIPT_DIR/config.default.json" "$BUILD_DIR/opt/tieline-bridge/config.json"
+elif [ -f "$SCRIPT_DIR/config.json" ]; then
     cp "$SCRIPT_DIR/config.json" "$BUILD_DIR/opt/tieline-bridge/config.json"
 fi
 

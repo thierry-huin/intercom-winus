@@ -18,18 +18,26 @@ echo "Output: $PACKAGE_DIR"
 echo ""
 
 # ─── Create package directory structure ───
-mkdir -p "$PACKAGE_DIR"/{docker-images,config,db,web,apk,src,certs,coturn,bridge}
+mkdir -p "$PACKAGE_DIR"/{docker-images,config,db,web,apk,src,certs,coturn,bridge,control_center}
 
-# ─── 1. Export Docker images ───
-echo "▸ [1/7] Exporting Docker images..."
-for img in intercom-winus-backend:latest intercom-winus-nginx:latest coturn/coturn:latest; do
+# ─── 1. Build & export Docker images ───
+echo "▸ [1/7] Building and exporting Docker images..."
+cd "$SCRIPT_DIR"
+docker compose build
+docker compose pull coturn
+
+# Resolve the actual image names/IDs created by compose
+BACKEND_IMG=$(docker compose images backend -q 2>/dev/null | head -1)
+NGINX_IMG=$(docker compose images nginx -q 2>/dev/null | head -1)
+if [ -z "$BACKEND_IMG" ] || [ -z "$NGINX_IMG" ]; then
+    BACKEND_IMG="winus-intercom-backend"
+    NGINX_IMG="winus-intercom-nginx"
+fi
+
+for img in "$BACKEND_IMG" "$NGINX_IMG" coturn/coturn:latest; do
     safe_name=$(echo "$img" | tr '/:' '_')
-    if docker image inspect "$img" &>/dev/null; then
-        echo "  Saving $img..."
-        docker save "$img" | gzip > "$PACKAGE_DIR/docker-images/${safe_name}.tar.gz"
-    else
-        echo "  ⚠ Image $img not found, skipping"
-    fi
+    echo "  Saving $img..."
+    docker save "$img" | gzip > "$PACKAGE_DIR/docker-images/${safe_name}.tar.gz"
 done
 
 # ─── 2. Copy web build ───
@@ -70,7 +78,15 @@ rsync -a --exclude='certs' --exclude='downloads' "$SCRIPT_DIR/nginx/" "$PACKAGE_
 # Coturn config
 cp "$SCRIPT_DIR/coturn/turnserver.conf" "$PACKAGE_DIR/coturn/"
 # Tie-line bridge
-rsync -a --exclude='__pycache__' "$SCRIPT_DIR/tie-line-bridge/" "$PACKAGE_DIR/bridge/"
+rsync -a --exclude='__pycache__' --exclude='.venv' \
+      "$SCRIPT_DIR/tie-line-bridge/" "$PACKAGE_DIR/bridge/"
+
+# Control Center (Python GUI for build/install/deploy actions). The Python
+# venv is created by `launch.sh` on first run, so we ship only the source.
+if [ -d "$SCRIPT_DIR/control_center" ]; then
+    rsync -a --exclude='.venv' --exclude='__pycache__' \
+          "$SCRIPT_DIR/control_center/" "$PACKAGE_DIR/control_center/"
+fi
 
 # ─── 5. Copy database ───
 echo "▸ [5/7] Copying database..."
@@ -163,6 +179,36 @@ fi
 # Bridge
 mkdir -p "$INSTALL_DIR/tie-line-bridge"
 cp -r "$SCRIPT_DIR/bridge/." "$INSTALL_DIR/tie-line-bridge/"
+
+# Control Center (Python GUI). On Linux we also drop a desktop entry so the
+# admin sees "Winus Control Center" in the launcher.
+if [ -d "$SCRIPT_DIR/control_center" ]; then
+    mkdir -p "$INSTALL_DIR/control_center"
+    cp -r "$SCRIPT_DIR/control_center/." "$INSTALL_DIR/control_center/"
+    chmod +x "$INSTALL_DIR/control_center/launch.sh" 2>/dev/null || true
+    if [ "$(uname)" = "Linux" ]; then
+        DESKTOP_DIR="$HOME/.local/share/applications"
+        mkdir -p "$DESKTOP_DIR"
+        cat > "$DESKTOP_DIR/winus-control-center.desktop" << DSKEOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Winus Control Center
+Comment=Build, deploy and manage Winus Intercom
+Exec=$INSTALL_DIR/control_center/launch.sh
+Icon=$INSTALL_DIR/flutter_app/web/icons/Icon-512.png
+Terminal=false
+Categories=Development;AudioVideo;Audio;Network;
+DSKEOF
+    elif [ "$(uname)" = "Darwin" ]; then
+        cat > "$INSTALL_DIR/WinusControlCenter.command" << CMDEOF
+#!/bin/bash
+cd "\$(dirname "\$0")"
+bash control_center/launch.sh
+CMDEOF
+        chmod +x "$INSTALL_DIR/WinusControlCenter.command"
+    fi
+fi
 
 # ─── Database ───
 echo "▸ Setting up database..."

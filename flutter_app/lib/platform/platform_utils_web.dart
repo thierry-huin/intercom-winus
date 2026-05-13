@@ -1,4 +1,6 @@
 import 'dart:convert';
+// ignore: avoid_web_libraries_in_flutter
+import 'dart:html' as html;
 import 'dart:js_interop';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
@@ -43,9 +45,61 @@ void platformSetStreamVolume(String streamId, double volume) {
   try { _jsSetStreamVolume(streamId.toJS, volume.toJS); } catch (_) {}
 }
 
+/// Sidetone: play the local microphone back into the selected speaker at
+/// the given level (0.0 = off, 1.0 = full). Implemented in JS (see
+/// `web/index.html`); a stub here keeps Dart happy when the helper is not
+/// present — the build of the web app just won't produce any loop.
+@JS('setSidetoneLevel')
+external void _jsSetSidetoneLevel(JSNumber level);
+
+void platformSetSidetoneLevel(double level) {
+  try { _jsSetSidetoneLevel(level.toJS); } catch (_) {}
+}
+
+/// Audio-focus monitoring is a native-only concern; the web platform leaves
+/// interruption handling to the browser and its tab life cycle.
+void platformStartAudioFocusMonitor(bool enable) {}
+void platformOnAudioFocusLost(void Function() listener) {}
+void platformOnAudioFocusGained(void Function() listener) {}
+
+/// Open an external URL (mailto:, https:, wa.me, ...). On the web we use
+/// `window.open(_, '_blank')`; on native this is a no-op and the caller is
+/// expected to gate the action behind `if (isWeb)`.
+void platformOpenUrl(String url) {
+  try {
+    html.window.open(url, '_blank');
+  } catch (_) {}
+}
+
 void platformSetAudioSinkId(String deviceId) {
   try { _jsSetAudioSinkId(deviceId.toJS); } catch (_) {}
 }
+
+/// On web, input device selection is handled via getUserMedia(deviceId) in
+/// MediaService.switchInputDevice. This is only used on native platforms.
+void platformSetAudioSourceId(String deviceId) {}
+
+/// No-op on web: device change events are already delivered by the browser
+/// via navigator.mediaDevices.ondevicechange if needed.
+void Function() platformOnAudioDevicesChanged(void Function() listener) {
+  return () {};
+}
+
+Future<bool> platformEnsureBluetoothPermission() async => true;
+
+void platformPlayRingtone() {
+  try { _jsPlayRingtone(); } catch (_) {}
+}
+
+void platformStopRingtone() {
+  try { _jsStopRingtone(); } catch (_) {}
+}
+
+@JS('playRingtone')
+external void _jsPlayRingtone();
+
+@JS('stopRingtone')
+external void _jsStopRingtone();
 
 Future<Map<String, List<Map<String, String>>>> platformEnumerateAudioDevices() async {
   try {
@@ -172,6 +226,11 @@ Future<void> platformStopForegroundService() async {}
 Future<void> setServerUrl(String url) async {}
 Future<String?> getSavedServerUrl() async => null;
 Future<void> initServerUrls() async {}
+Future<String?> platformSaveTextFile(String filename, String content) async {
+  platformDownloadFile(filename, content);
+  return filename;
+}
+Future<String?> platformReadTextFile(String path) async => null;
 
 /// Create WebSocket channel (standard, no SSL override needed on web)
 Future<WebSocketChannel> createWebSocketChannel(String url) async {

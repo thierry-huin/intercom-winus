@@ -14,6 +14,11 @@ const activePtt = new Map();
 // Kicked users: userId -> expiry timestamp. Rejects auth during this window.
 const kickedUsers = new Map();
 
+// Ring cooldown: `${fromId}->${toId}` -> timestamp of last ring. 10s between
+// consecutive rings to the same target so admins can't spam someone.
+const ringCooldown = new Map();
+const RING_COOLDOWN_MS = 10_000;
+
 function setupSignaling(wss) {
   // Notify clients when their transport dies so they can re-init media
   ms.setOnTransportClose((uid, direction) => {
@@ -399,6 +404,52 @@ async function handleMessage(ws, msg, getUserId, setUserId) {
             }
           }, delay);
         }
+      }
+      break;
+    }
+
+    // ---- Ring (admin/superuser pings an online user) ----
+    case 'ring_user': {
+      const fromUser = db.prepare('SELECT id, role, display_name FROM users WHERE id = ?').get(userId);
+      if (!fromUser || (fromUser.role !== 'admin' && fromUser.role !== 'superuser')) {
+        send(ws, { type: 'ring_denied', reason: 'forbidden', requestId: msg.requestId });
+        break;
+      }
+      const targetUserId = Number(msg.targetUserId);
+      if (!Number.isFinite(targetUserId) || targetUserId === userId) {
+        send(ws, { type: 'ring_denied', reason: 'invalid_target', requestId: msg.requestId });
+        break;
+      }
+      if (!clients.has(targetUserId)) {
+        send(ws, { type: 'ring_denied', reason: 'offline', requestId: msg.requestId, targetUserId });
+        break;
+      }
+      const cooldownKey = `${userId}->${targetUserId}`;
+      const last = ringCooldown.get(cooldownKey) || 0;
+      const now = Date.now();
+      if (now - last < RING_COOLDOWN_MS) {
+        const remainMs = RING_COOLDOWN_MS - (now - last);
+        send(ws, { type: 'ring_denied', reason: 'cooldown', remainMs, requestId: msg.requestId, targetUserId });
+        break;
+      }
+      ringCooldown.set(cooldownKey, now);
+
+      sendToUser(targetUserId, {
+        type: 'incoming_ring',
+        fromUserId: userId,
+        fromDisplayName: fromUser.display_name || 'Admin',
+        reason: typeof msg.reason === 'string' ? msg.reason.slice(0, 120) : null,
+      });
+      send(ws, { type: 'ring_ack', targetUserId, requestId: msg.requestId });
+      console.log(`[Signaling] ring_user: ${userId} -> ${targetUserId}`);
+      break;
+    }
+
+    // ---- Ring dismissed by target ----
+    case 'ring_dismiss': {
+      const fromId = Number(msg.fromUserId);
+      if (Number.isFinite(fromId)) {
+        sendToUser(fromId, { type: 'ring_dismissed', byUserId: userId });
       }
       break;
     }

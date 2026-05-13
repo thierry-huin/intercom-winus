@@ -33,6 +33,18 @@ backend/node_modules/
 __pycache__/
 *.pyc
 tie-line-bridge/.venv/
+tie-line-bridge/.venv-server-bridge/
+control_center/.venv/
+
+# Bridge dist output
+tie-line-bridge/dist/
+
+# Companion module build artifacts
+companion-module-winus-intercom/node_modules/
+companion-module-winus-intercom/dist/
+
+# Archive (old versions)
+archive/
 
 # IDE
 .idea/
@@ -42,4 +54,3 @@ tie-line-bridge/.venv/
 
 # Logs
 *.log
-tie-line-bridge/opus.dll

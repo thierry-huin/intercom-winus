@@ -192,19 +192,48 @@ class MediaService {
     }
 
     // First time or track lost — acquire microphone
+    final bool hasUsableDeviceId = deviceId != null && deviceId.isNotEmpty;
     final Map<String, dynamic> constraints;
     if (tieLineChannel >= 0) {
       constraints = {
         'audio': {'_mcChannel': tieLineChannel},
         'video': false,
       };
-    } else {
+    } else if (kIsWeb && hasUsableDeviceId) {
+      // Browsers accept the MediaTrackConstraints {deviceId: {exact: X}} form.
       constraints = {
-        'audio': deviceId != null ? {'deviceId': {'exact': deviceId}} : true,
+        'audio': {'deviceId': {'exact': deviceId}},
+        'video': false,
+      };
+    } else {
+      // On native (Android/iOS) flutter_webrtc's ConstraintsMap.getString
+      // crashes with a ClassCastException when it sees {exact: ...} as the
+      // deviceId value. Additionally, Android mic routing is not actually
+      // controlled by getUserMedia's deviceId — it's controlled by
+      // AudioManager.setCommunicationDevice via switchInputDevice() below.
+      // Also used when no valid deviceId is available (e.g. first launch
+      // on a fresh browser, empty deviceId before permission).
+      constraints = {
+        'audio': true,
         'video': false,
       };
     }
-    _localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    try {
+      _localStream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (e) {
+      // Common on new devices: the saved deviceId no longer exists or is
+      // still empty (pre-permission). Retry with the browser default mic.
+      final msg = e.toString();
+      final isOverconstrained = msg.contains('OverconstrainedError') ||
+          msg.contains('NotFoundError') ||
+          msg.contains('OverconstrainedError');
+      if (!isOverconstrained || constraints['audio'] == true) {
+        rethrow;
+      }
+      debugPrint('[Media] getUserMedia failed ($msg) — retrying with default mic');
+      _localStream = await navigator.mediaDevices
+          .getUserMedia({'audio': true, 'video': false});
+    }
     final track = _localStream!.getAudioTracks().first;
 
     _sendTransport!.produce(
@@ -233,7 +262,14 @@ class MediaService {
       final inputs = <Map<String, String>>[];
       final outputs = <Map<String, String>>[];
       for (final d in devices) {
-        final label = d.label.isNotEmpty ? d.label : 'Device ${d.deviceId.substring(0, 8)}';
+        // Skip entries without a usable deviceId. Some browsers return
+        // a "default" placeholder entry with an empty deviceId before
+        // permission is granted, which breaks getUserMedia({exact: ''}).
+        if (d.deviceId.isEmpty) continue;
+        final labelFallback = d.deviceId.length >= 8
+            ? 'Device ${d.deviceId.substring(0, 8)}'
+            : 'Device ${d.deviceId}';
+        final label = d.label.isNotEmpty ? d.label : labelFallback;
         if (d.kind == 'audioinput') {
           inputs.add({'deviceId': d.deviceId, 'label': label});
         } else if (d.kind == 'audiooutput') {
@@ -250,10 +286,30 @@ class MediaService {
 
   Future<void> switchInputDevice(String deviceId) async {
     debugPrint('[Media] Switching input device to $deviceId...');
-    final stream = await navigator.mediaDevices.getUserMedia({
-      'audio': {'deviceId': {'exact': deviceId}},
-      'video': false,
-    });
+    // On native platforms (Android/iOS) mic routing is not controllable via
+    // getUserMedia(deviceId). Delegate to the OS (AudioManager on Android)
+    // which routes both capture and playback atomically to the chosen device.
+    if (!kIsWeb) {
+      platformSetAudioSourceId(deviceId);
+      debugPrint('[Media] Native audio routing updated to $deviceId');
+      return;
+    }
+    MediaStream stream;
+    if (deviceId.isEmpty) {
+      stream = await navigator.mediaDevices
+          .getUserMedia({'audio': true, 'video': false});
+    } else {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          'audio': {'deviceId': {'exact': deviceId}},
+          'video': false,
+        });
+      } catch (e) {
+        debugPrint('[Media] switchInputDevice: $e — using default mic');
+        stream = await navigator.mediaDevices
+            .getUserMedia({'audio': true, 'video': false});
+      }
+    }
     final newTrack = stream.getAudioTracks().first;
     debugPrint('[Media] New track obtained: ${newTrack.id}, enabled=${newTrack.enabled}');
 
@@ -303,6 +359,122 @@ class MediaService {
     // Also apply to all existing elements via ensureRemoteAudioPlaying
     platformEnsureRemoteAudioPlaying();
     debugPrint('[Media] Output device set to $deviceId');
+  }
+
+  /// Enable or disable the microphone audio track. Used by the mic
+  /// mute/unmute toggle to stop audio capture without tearing down the
+  /// existing PTT sessions — the server keeps routing to the same targets,
+  /// so flipping this back to `true` immediately resumes talking to anyone
+  /// that was pressed/latched before muting.
+  void setMicEnabled(bool on) {
+    if (_localStream == null) {
+      debugPrint('[Media] setMicEnabled($on): no local stream yet');
+      return;
+    }
+    for (final track in _localStream!.getAudioTracks()) {
+      track.enabled = on;
+    }
+    debugPrint('[Media] Mic enabled=$on');
+  }
+
+  // ======================== CALL INTERRUPTION ========================
+
+  /// True once [releaseLocalStream] has been called and no matching
+  /// [reacquireLocalStream] has run yet.
+  bool _micReleasedForCall = false;
+  bool get micReleasedForCall => _micReleasedForCall;
+
+  /// Duck factor currently applied to every consumer (1.0 = off).
+  double _duckFactor = 1.0;
+
+  /// Release the microphone so another app (GSM/WhatsApp/FaceTime…) can
+  /// capture it. Stops the audio track(s), nils out the local stream and
+  /// pauses the producer so mediasoup stops publishing stale audio. The
+  /// transport / PTT state server-side is untouched — calling
+  /// [reacquireLocalStream] restores everything.
+  Future<void> releaseLocalStream() async {
+    if (_micReleasedForCall) return; // idempotent
+    _micReleasedForCall = true;
+    try {
+      if (_producer != null && !_producer!.closed && !_producer!.paused) {
+        _producer!.pause();
+      }
+    } catch (e) {
+      debugPrint('[Media] pause producer failed: $e');
+    }
+    if (_localStream != null) {
+      for (final t in _localStream!.getAudioTracks()) {
+        try { t.stop(); } catch (_) {}
+      }
+      _localStream = null;
+    }
+    debugPrint('[Media] Local mic released for incoming call');
+  }
+
+  /// Reacquire the microphone after an incoming call ends. Re-runs
+  /// getUserMedia with the previously-selected input device and swaps the
+  /// track into the existing producer so every active PTT target starts
+  /// hearing us again automatically.
+  Future<void> reacquireLocalStream({String? deviceId}) async {
+    if (!_micReleasedForCall) return;
+    _micReleasedForCall = false;
+
+    final bool hasUsableDeviceId = deviceId != null && deviceId.isNotEmpty;
+    Map<String, dynamic> constraints;
+    if (kIsWeb && hasUsableDeviceId) {
+      constraints = {
+        'audio': {'deviceId': {'exact': deviceId}},
+        'video': false,
+      };
+    } else {
+      constraints = {'audio': true, 'video': false};
+    }
+    MediaStream newStream;
+    try {
+      newStream = await navigator.mediaDevices.getUserMedia(constraints);
+    } catch (e) {
+      debugPrint('[Media] reacquire getUserMedia failed ($e) — retrying default');
+      newStream = await navigator.mediaDevices
+          .getUserMedia({'audio': true, 'video': false});
+    }
+    final newTrack = newStream.getAudioTracks().first;
+    _localStream = newStream;
+
+    if (_producer != null && !_producer!.closed) {
+      try {
+        await _producer!.replaceTrack(newTrack);
+        if (_producer!.paused) _producer!.resume();
+        debugPrint('[Media] Producer track replaced after call');
+      } catch (e) {
+        debugPrint('[Media] replaceTrack after call failed: $e — re-producing');
+        try { _producer!.close(); } catch (_) {}
+        _producer = null;
+        if (_sendTransport != null) {
+          _sendTransport!.produce(
+            track: newTrack,
+            stream: newStream,
+            source: 'mic',
+            stopTracks: false,
+            disableTrackOnPause: false,
+            zeroRtpOnPause: false,
+          );
+        }
+      }
+    }
+    debugPrint('[Media] Local mic reacquired after call');
+  }
+
+  /// Apply or remove the ducking factor to every current and future
+  /// consumer. `factor` of 1.0 means no ducking; 0.0 mutes completely.
+  /// Takes the per-peer volumes into account so the user's relative volume
+  /// preferences survive the duck cycle.
+  void setDuckActive(bool active, {double factor = 1.0}) {
+    _duckFactor = active ? factor : 1.0;
+    debugPrint('[Media] setDuckActive($active, factor=$factor)');
+    for (final consumer in _consumers.values) {
+      final base = _peerVolumes[consumer.peerId] ?? 1.0;
+      _setConsumerVolume(consumer, base * _duckFactor);
+    }
   }
 
   // ======================== CONSUME ========================
@@ -378,10 +550,12 @@ class MediaService {
   }
 
   void _applyVolumeForConsumer(Consumer consumer) {
-    final volume = _peerVolumes[consumer.peerId];
-    // Only apply if user explicitly changed volume (skip default 1.0)
-    if (volume != null && volume != 1.0) {
-      _setConsumerVolume(consumer, volume);
+    final base = _peerVolumes[consumer.peerId] ?? 1.0;
+    final effective = base * _duckFactor;
+    // Only bother when a non-default volume is in play — otherwise leave
+    // the WebRTC default behaviour untouched.
+    if (effective != 1.0) {
+      _setConsumerVolume(consumer, effective);
     }
   }
 

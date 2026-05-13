@@ -35,6 +35,7 @@ function getUserTargets(userId) {
         FROM permissions p
         JOIN users u ON p.to_user_id = u.id
         WHERE p.from_user_id = ? AND p.can_talk = 1
+          AND u.role NOT IN ('admin','superadmin')
       `).all(userId);
 
   const groups = isAdmin

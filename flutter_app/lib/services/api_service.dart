@@ -112,6 +112,24 @@ class ApiService {
     await _fetch('PUT', '/api/admin/users/$id', body: jsonEncode(data));
   }
 
+  /// Superadmin-only: rename the login username for the given user id.
+  /// Throws on conflict (username already taken).
+  Future<void> updateUserUsername(int id, String username) async {
+    final r = await _fetch('PUT', '/api/admin/users/$id/username',
+        body: jsonEncode({'username': username}));
+    final data = _decode(r, allowEmpty: true);
+    _checkStatus(r, data);
+  }
+
+  /// Superadmin-only: change the numeric id of a user (cascades through every
+  /// FK-reference table on the server).
+  Future<void> changeUserId(int id, int newId) async {
+    final r = await _fetch('PUT', '/api/admin/users/$id/change-id',
+        body: jsonEncode({'newId': newId}));
+    final data = _decode(r, allowEmpty: true);
+    _checkStatus(r, data);
+  }
+
   Future<void> deleteUser(int id) async {
     await _fetch('DELETE', '/api/admin/users/$id');
   }
@@ -246,8 +264,15 @@ class ApiService {
     return data;
   }
 
-  Future<void> updateServerConfig(Map<String, dynamic> data) async {
+  Future<Map<String, dynamic>> updateServerConfig(Map<String, dynamic> data) async {
     final r = await _fetch('PUT', '/api/admin/server-config', body: jsonEncode(data));
+    final decoded = _decode(r, allowEmpty: true);
+    _checkStatus(r, decoded);
+    return (decoded is Map<String, dynamic>) ? decoded : <String, dynamic>{};
+  }
+
+  Future<void> clearServerConfigSyncError() async {
+    final r = await _fetch('POST', '/api/admin/server-config/clear-sync-error');
     final decoded = _decode(r, allowEmpty: true);
     _checkStatus(r, decoded);
   }

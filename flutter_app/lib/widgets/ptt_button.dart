@@ -1,10 +1,125 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 
+/// Top strip on every user button. Shows the bell + RING affordance for
+/// admin/superuser callers (interactive mode), or stays empty for regular
+/// users. In both modes the background flips to bright green when the
+/// matching peer is currently transmitting audio to us, giving the user a
+/// chance to identify whose voice they hear.
+class _TopStrip extends StatefulWidget {
+  final bool online;
+  final bool receiving;
+  final bool interactive;
+  final VoidCallback? onRing;
+  final Color sectionColor;
+
+  const _TopStrip({
+    required this.online,
+    required this.receiving,
+    required this.interactive,
+    required this.onRing,
+    required this.sectionColor,
+  });
+
+  @override
+  State<_TopStrip> createState() => _TopStripState();
+}
+
+class _TopStripState extends State<_TopStrip> {
+  bool _pressed = false;
+
+  bool get _enabled =>
+      widget.interactive && widget.online && widget.onRing != null;
+
+  void _setPressed(bool v) {
+    if (!_enabled) return;
+    if (_pressed == v) return;
+    setState(() => _pressed = v);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    // Bright lime → saturated green when audio is incoming. Otherwise the
+    // strip mirrors the press / idle / disabled colours of the rest of the
+    // button.
+    const greenA = Color(0xFF1FE36A);
+    const greenB = Color(0xFF13A24A);
+    final Color bg;
+    if (widget.receiving) {
+      bg = greenA;
+    } else if (!_enabled) {
+      bg = widget.sectionColor.withValues(alpha: 0.95);
+    } else if (_pressed) {
+      bg = AppColors.pressedBlue;
+    } else {
+      bg = AppColors.pressedBlue.withValues(alpha: 0.28);
+    }
+
+    final fg = widget.receiving
+        ? Colors.white
+        : !_enabled
+            ? AppColors.textSecondary.withValues(alpha: 0.6)
+            : _pressed
+                ? Colors.white
+                : AppColors.textPrimary;
+
+    final inner = AnimatedContainer(
+      duration: const Duration(milliseconds: 200),
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      decoration: BoxDecoration(
+        gradient: widget.receiving
+            ? const LinearGradient(
+                colors: [greenA, greenB],
+                begin: Alignment.topCenter,
+                end: Alignment.bottomCenter,
+              )
+            : null,
+        color: widget.receiving ? null : bg,
+      ),
+      child: widget.interactive
+          ? Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(Icons.notifications_active, size: 13, color: fg),
+                const SizedBox(width: 6),
+                Text(
+                  'RING',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    letterSpacing: 0.8,
+                    color: fg,
+                  ),
+                ),
+              ],
+            )
+          // Passive mode for regular users: keep the strip height so every
+          // button has the same shape, but no icon and no text.
+          : const SizedBox(height: 13),
+    );
+
+    if (!_enabled) return inner;
+    return GestureDetector(
+      onTapDown: (_) => _setPressed(true),
+      onTapUp: (_) => _setPressed(false),
+      onTapCancel: () => _setPressed(false),
+      onTap: widget.onRing,
+      child: inner,
+    );
+  }
+}
+
 class PttButton extends StatelessWidget {
   final String label;
   final bool online;
+  // True while the local user is currently transmitting (PTT) toward this
+  // target. Paints the entire central PTT zone (name + helper line) in red.
   final bool active;
+  // True while this peer is currently transmitting audio TO us. Paints the
+  // top strip green so the listener can spot whose voice they hear, even
+  // when several peers talk at once.
+  final bool receiving;
   final bool enabled;
   final bool isLatch;
   final Color? userColor;
@@ -14,12 +129,20 @@ class PttButton extends StatelessWidget {
   final VoidCallback onPttStop;
   final VoidCallback onTap; // for latch mode
   final VoidCallback onToggleLatch;
+  // Show the top strip at all. False on bridges and groups (they never have
+  // their own RX/RING indication).
+  final bool showTopStrip;
+  // Top strip is interactive (bell + RING + tap-to-ring). Only set on admin
+  // / superuser sessions; regular users see the passive strip.
+  final bool topStripInteractive;
+  final VoidCallback? onRing;
 
   const PttButton({
     super.key,
     required this.label,
     required this.online,
     required this.active,
+    this.receiving = false,
     required this.enabled,
     required this.isLatch,
     this.userColor,
@@ -29,49 +152,46 @@ class PttButton extends StatelessWidget {
     required this.onPttStop,
     required this.onTap,
     required this.onToggleLatch,
+    this.showTopStrip = false,
+    this.topStripInteractive = false,
+    this.onRing,
   });
 
   @override
   Widget build(BuildContext context) {
-    // Use userColor for online border if available
+    // Use userColor for online border if available. The outer container keeps
+    // its "online/offline" colours; the green RX flash lives on the top
+    // strip and the red TX paints the central PTT zone.
     final onlineBorder = userColor ?? AppColors.connectedBlueGrey;
 
-    final topColor = active
-        ? AppColors.pressedBlueLight
-        : online
-            ? AppColors.connectedBlueGreyLight
-            : AppColors.disconnectedGreyLight;
-    final bottomColor = active
-        ? AppColors.pressedBlueDark
-        : online
-            ? AppColors.connectedBlueGreyDark
-            : AppColors.disconnectedGreyDark;
-    final borderColor = active
-        ? AppColors.pressedBlueLight
-        : online
-            ? onlineBorder
-            : AppColors.disconnectedGreyDark;
-    final borderWidth = active ? 2.5 : (online ? 2.5 : 1.2);
-    final sectionColor = active
-        ? AppColors.pressedBlueDark
-        : online
-            ? AppColors.connectedBlueGreyDark
-            : AppColors.disconnectedGreyDark;
-    final labelColor = active
-        ? AppColors.textPrimary
-        : online
-            ? AppColors.textPrimary
-            : const Color(0xFF6B737D);
+    final topColor = online
+        ? AppColors.connectedBlueGreyLight
+        : AppColors.disconnectedGreyLight;
+    final bottomColor = online
+        ? AppColors.connectedBlueGreyDark
+        : AppColors.disconnectedGreyDark;
+    final borderColor = online ? onlineBorder : AppColors.disconnectedGreyDark;
+    final borderWidth = online ? 2.5 : 1.2;
+    final sectionColor = online
+        ? AppColors.connectedBlueGreyDark
+        : AppColors.disconnectedGreyDark;
+    final labelColor =
+        online ? AppColors.textPrimary : const Color(0xFF6B737D);
     final statusColor = active
         ? Colors.white
         : online
             ? onlineBorder
             : const Color(0xFF4A5058);
     final helperColor = active
-        ? AppColors.textPrimary.withValues(alpha: 0.88)
+        ? Colors.white.withValues(alpha: 0.92)
         : online
             ? AppColors.textSecondary
             : const Color(0xFF555D66);
+
+    // Whole central zone goes red while transmitting; otherwise a soft
+    // top→bottom gradient on the regular blue-grey palette.
+    final zone1Top = active ? AppColors.talkRed : topColor;
+    final zone1Bottom = active ? AppColors.talkRedDark : bottomColor;
 
     return AnimatedContainer(
       duration: const Duration(milliseconds: 120),
@@ -97,7 +217,20 @@ class PttButton extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            // ===== Zone 1: PTT =====
+            // ===== Zone 0: Top strip — RING (interactive) or empty
+            // (passive). Background flips to green while we're receiving
+            // audio from this peer.
+            if (showTopStrip) ...[
+              _TopStrip(
+                online: online,
+                receiving: receiving,
+                interactive: topStripInteractive,
+                onRing: onRing,
+                sectionColor: sectionColor,
+              ),
+              Container(height: 1, color: Colors.black.withValues(alpha: 0.2)),
+            ],
+            // ===== Zone 1: PTT — entire zone turns red while talking.
             GestureDetector(
               onTapDown: !isLatch && enabled ? (_) => onPttStart() : null,
               onTapUp: !isLatch && enabled ? (_) => onPttStop() : null,
@@ -109,10 +242,10 @@ class PttButton extends StatelessWidget {
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     colors: enabled
-                        ? [topColor, bottomColor]
+                        ? [zone1Top, zone1Bottom]
                         : [
-                            topColor.withValues(alpha: 0.7),
-                            bottomColor.withValues(alpha: 0.7),
+                            zone1Top.withValues(alpha: 0.7),
+                            zone1Bottom.withValues(alpha: 0.7),
                           ],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
@@ -150,7 +283,7 @@ class PttButton extends StatelessWidget {
                             style: TextStyle(
                               fontSize: 12,
                               fontWeight: FontWeight.w600,
-                              color: labelColor,
+                              color: active ? Colors.white : labelColor,
                             ),
                           ),
                         ),
@@ -164,7 +297,7 @@ class PttButton extends StatelessWidget {
                               key: const ValueKey('talking'),
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Icon(Icons.mic, size: 14, color: Colors.white.withValues(alpha: 0.9)),
+                                Icon(Icons.mic, size: 14, color: Colors.white.withValues(alpha: 0.95)),
                                 const SizedBox(width: 4),
                                 Text(
                                   'TALKING',
@@ -172,7 +305,7 @@ class PttButton extends StatelessWidget {
                                     fontSize: 10,
                                     fontWeight: FontWeight.bold,
                                     letterSpacing: 1,
-                                    color: AppColors.textPrimary.withValues(alpha: 0.9),
+                                    color: Colors.white.withValues(alpha: 0.95),
                                   ),
                                 ),
                               ],
@@ -258,9 +391,9 @@ class PttButton extends StatelessWidget {
                 ),
               ),
             ),
-            ],
-          ),
+          ],
         ),
+      ),
     );
   }
 }

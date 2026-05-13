@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Privacy Policy – Winus Intercom</title>
+  <style>
+    :root {
+      --bg: #0e1116;
+      --bg-alt: #161b22;
+      --fg: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --border: #30363d;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+      background: var(--bg);
+      color: var(--fg);
+      margin: 0;
+      padding: 0;
+      line-height: 1.55;
+    }
+    .container {
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 40px 24px 80px;
+    }
+    header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 18px;
+      margin-bottom: 24px;
+    }
+    h1 { margin: 0 0 6px; font-size: 28px; }
+    h2 { margin-top: 32px; font-size: 20px; color: var(--accent); }
+    h3 { margin-top: 22px; font-size: 16px; }
+    .updated { color: var(--muted); font-size: 13px; }
+    code, pre {
+      background: var(--bg-alt);
+      padding: 2px 6px;
+      border-radius: 4px;
+      font-size: 0.92em;
+    }
+    a { color: var(--accent); }
+    nav {
+      margin-bottom: 22px;
+      font-size: 14px;
+      color: var(--muted);
+    }
+    nav a {
+      margin-right: 12px;
+      text-decoration: none;
+    }
+    nav a.active {
+      color: var(--fg);
+      font-weight: 600;
+    }
+    section.lang { display: none; }
+    section.lang.active { display: block; }
+    ul { padding-left: 22px; }
+    li { margin: 4px 0; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 12px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid var(--border);
+      padding: 8px 10px;
+      vertical-align: top;
+      text-align: left;
+    }
+    th { background: var(--bg-alt); }
+    footer {
+      margin-top: 60px;
+      padding-top: 18px;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 13px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Privacy Policy – Winus Intercom</h1>
+      <div class="updated">Last updated / Última actualización: 28 April 2026</div>
+      <nav>
+        <a href="#" data-lang="es" class="active">Español</a>
+        <a href="#" data-lang="en">English</a>
+      </nav>
+    </header>
+
+    <!-- ============================ ESPAÑOL ============================ -->
+    <section class="lang active" id="lang-es">
+      <p>
+        Winus Intercom (la &laquo;App&raquo;) es un sistema de intercom IP profesional
+        desarrollado por Winus / Thierry Huin. Esta política describe qué datos
+        trata la App y por qué.
+      </p>
+
+      <h2>1. Datos que tratamos</h2>
+      <p>La App SÓLO trata los siguientes datos, y únicamente para su funcionamiento:</p>
+      <ul>
+        <li>
+          <strong>Audio del micrófono</strong>: capturado únicamente mientras
+          el usuario pulsa la tecla push-to-talk, y enviado en tiempo real
+          (WebRTC / mediasoup) a los destinatarios autorizados por el
+          administrador. El audio NO se graba ni almacena en ningún servidor.
+        </li>
+        <li>
+          <strong>Credenciales de cuenta</strong> (usuario y contraseña):
+          guardadas localmente en el almacenamiento privado del dispositivo
+          (SharedPreferences) para permitir la reconexión automática. No se
+          comparten con terceros.
+        </li>
+        <li>
+          <strong>Dirección de red / IP</strong>: usada por el servidor para
+          establecer la conexión WebRTC. El servidor procesa la IP únicamente
+          durante la sesión activa y no la persiste con fines analíticos.
+        </li>
+        <li>
+          <strong>Identificador de sesión / token JWT</strong>: emitido por el
+          servidor para autenticar la sesión.
+        </li>
+      </ul>
+      <p>
+        <strong>NO recopilamos</strong> datos de localización, contactos,
+        mensajes, fotos, vídeo, historial de navegación, datos publicitarios
+        ni identificadores de dispositivo (Advertising ID).
+      </p>
+
+      <h2>2. Permisos del dispositivo</h2>
+      <table>
+        <thead>
+          <tr><th>Permiso</th><th>Por qué se necesita</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>RECORD_AUDIO</code><br><code>FOREGROUND_SERVICE_MICROPHONE</code></td><td>Capturar y enviar la voz del usuario mientras se mantiene pulsada la tecla PTT, incluso con la app en segundo plano.</td></tr>
+          <tr><td><code>INTERNET</code><br><code>ACCESS_NETWORK_STATE</code></td><td>Conectar al servidor de intercom y detectar cambios de red para reconectar automáticamente.</td></tr>
+          <tr><td><code>BLUETOOTH</code><br><code>BLUETOOTH_CONNECT</code></td><td>Enrutar el audio a un auricular Bluetooth cuando el usuario lo selecciona.</td></tr>
+          <tr><td><code>MODIFY_AUDIO_SETTINGS</code></td><td>Ajustar el modo de audio del sistema (modo comunicación de voz, altavoz, atenuación de notificaciones).</td></tr>
+          <tr><td><code>WAKE_LOCK</code></td><td>Mantener la pantalla activa durante una sesión de intercom.</td></tr>
+          <tr><td><code>VIBRATE</code></td><td>Avisar al recibir audio o un &laquo;ring&raquo; del administrador.</td></tr>
+          <tr><td><code>POST_NOTIFICATIONS</code></td><td>Mostrar la notificación del servicio en primer plano.</td></tr>
+          <tr><td><code>FOREGROUND_SERVICE</code></td><td>Mantener la conexión de audio cuando la app no está en pantalla.</td></tr>
+          <tr><td><code>CAMERA</code></td><td>
+            La App <strong>no accede a la cámara</strong>, no captura ni envía vídeo
+            y no solicita autorización de cámara al usuario. La App utiliza
+            únicamente el subsistema de audio de WebRTC; el permiso de cámara
+            que pueda heredar de dependencias se neutraliza explícitamente en
+            el manifest mediante <code>tools:node="remove"</code>.
+          </td></tr>
+        </tbody>
+      </table>
+
+      <h2>3. Almacenamiento y retención</h2>
+      <p>Los datos se procesan en tiempo real y no se almacenan más allá de:</p>
+      <ul>
+        <li>
+          Las credenciales locales en el dispositivo (eliminables al cerrar
+          sesión).
+        </li>
+        <li>
+          El registro de cuenta y la lista de permisos en el servidor privado
+          de la organización (controlado por el administrador, no por
+          terceros).
+        </li>
+      </ul>
+
+      <h2>4. Compartición con terceros</h2>
+      <p>
+        NO compartimos datos personales con terceros. La App
+        <strong>no integra SDKs de publicidad ni de analítica</strong>.
+        Las comunicaciones WebRTC se cifran en tránsito (DTLS-SRTP). Las
+        peticiones HTTP/WebSocket se realizan sobre TLS contra el servidor
+        configurado por el administrador de la organización.
+      </p>
+
+      <h2>5. Niños</h2>
+      <p>
+        La App no está destinada a menores de 13 años y no recopila datos de
+        menores intencionadamente.
+      </p>
+
+      <h2>6. Derechos del usuario</h2>
+      <p>
+        Puedes solicitar el acceso, rectificación o eliminación de tu cuenta
+        y datos contactando con el administrador de tu organización o por
+        email a:
+      </p>
+      <p>📧 <a href="mailto:thierry@huin.tv">thierry@huin.tv</a></p>
+
+      <h2>7. Cambios</h2>
+      <p>
+        Cualquier cambio sustancial en esta política se publicará en esta
+        misma URL y se comunicará a los administradores de las organizaciones
+        que utilizan la App.
+      </p>
+
+      <h2>8. Responsable</h2>
+      <p>
+        Thierry Huin – Winus Intercom<br>
+        Email: <a href="mailto:thierry@huin.tv">thierry@huin.tv</a>
+      </p>
+    </section>
+
+    <!-- ============================ ENGLISH ============================ -->
+    <section class="lang" id="lang-en">
+      <p>
+        Winus Intercom (the &ldquo;App&rdquo;) is a professional IP intercom
+        system developed by Winus / Thierry Huin. This policy describes which
+        data the App processes and why.
+      </p>
+
+      <h2>1. Data we process</h2>
+      <p>The App processes ONLY the following data, strictly to operate the service:</p>
+      <ul>
+        <li>
+          <strong>Microphone audio</strong>: captured only while the user
+          presses the push-to-talk key and transmitted in real time (WebRTC /
+          mediasoup) to peers authorized by the administrator. Audio is
+          <strong>never recorded or stored</strong> on any server.
+        </li>
+        <li>
+          <strong>Login credentials</strong> (username and password): stored
+          locally in the device's private storage (SharedPreferences) to allow
+          automatic reconnection. They are never shared with third parties.
+        </li>
+        <li>
+          <strong>Network address / IP</strong>: used by the server to
+          establish the WebRTC session. The IP is processed only during the
+          active session and not persisted for analytics.
+        </li>
+        <li>
+          <strong>Session token (JWT)</strong>: issued by the server to
+          authenticate the session.
+        </li>
+      </ul>
+      <p>
+        We do <strong>NOT</strong> collect location, contacts, messages,
+        photos, video, browsing history, advertising data or device
+        advertising identifiers.
+      </p>
+
+      <h2>2. Device permissions</h2>
+      <table>
+        <thead>
+          <tr><th>Permission</th><th>Why it is needed</th></tr>
+        </thead>
+        <tbody>
+          <tr><td><code>RECORD_AUDIO</code><br><code>FOREGROUND_SERVICE_MICROPHONE</code></td><td>Capture and transmit the user's voice while PTT is held, even when the app is in the background.</td></tr>
+          <tr><td><code>INTERNET</code><br><code>ACCESS_NETWORK_STATE</code></td><td>Connect to the intercom server and reconnect on network changes.</td></tr>
+          <tr><td><code>BLUETOOTH</code><br><code>BLUETOOTH_CONNECT</code></td><td>Route audio to a Bluetooth headset when the user selects one.</td></tr>
+          <tr><td><code>MODIFY_AUDIO_SETTINGS</code></td><td>Configure the system audio mode (voice communication, speakerphone, ducking of notifications).</td></tr>
+          <tr><td><code>WAKE_LOCK</code></td><td>Keep the screen on during an intercom session.</td></tr>
+          <tr><td><code>VIBRATE</code></td><td>Alert on incoming audio or admin &ldquo;ring&rdquo;.</td></tr>
+          <tr><td><code>POST_NOTIFICATIONS</code></td><td>Show the foreground-service notification.</td></tr>
+          <tr><td><code>FOREGROUND_SERVICE</code></td><td>Keep the audio connection alive when the app is not on screen.</td></tr>
+          <tr><td><code>CAMERA</code></td><td>
+            The App <strong>does NOT access the camera</strong>, does NOT
+            capture or transmit video, and does NOT prompt the user for camera
+            authorization. The App uses only the audio subsystem of WebRTC;
+            any inherited camera permission is explicitly stripped from the
+            manifest using <code>tools:node="remove"</code>.
+          </td></tr>
+        </tbody>
+      </table>
+
+      <h2>3. Storage and retention</h2>
+      <p>Data is processed in real time and not stored beyond:</p>
+      <ul>
+        <li>Local credentials on the device (cleared when the user logs out).</li>
+        <li>
+          Account records and permission lists on the organization's private
+          server (controlled by its administrator, not by third parties).
+        </li>
+      </ul>
+
+      <h2>4. Sharing with third parties</h2>
+      <p>
+        We do NOT share personal data with third parties. The App
+        <strong>does not integrate advertising or analytics SDKs</strong>.
+        WebRTC communications are encrypted in transit (DTLS-SRTP).
+        HTTP/WebSocket calls run over TLS against the server configured by
+        the organization's administrator.
+      </p>
+
+      <h2>5. Children</h2>
+      <p>
+        The App is not intended for children under 13 and does not knowingly
+        collect data from minors.
+      </p>
+
+      <h2>6. User rights</h2>
+      <p>
+        You can request access, correction or deletion of your account and
+        data by contacting your organization's administrator or by email at:
+      </p>
+      <p>📧 <a href="mailto:thierry@huin.tv">thierry@huin.tv</a></p>
+
+      <h2>7. Changes</h2>
+      <p>
+        Any substantial change to this policy will be published at this URL
+        and notified to the administrators of organizations using the App.
+      </p>
+
+      <h2>8. Controller</h2>
+      <p>
+        Thierry Huin – Winus Intercom<br>
+        Email: <a href="mailto:thierry@huin.tv">thierry@huin.tv</a>
+      </p>
+    </section>
+
+    <footer>
+      Winus Intercom – Privacy Policy / Política de Privacidad &middot;
+      <a href="mailto:thierry@huin.tv">thierry@huin.tv</a>
+    </footer>
+  </div>
+
+  <script>
+    // Tiny language toggle: no external dependency, no tracking.
+    document.querySelectorAll('nav a').forEach(function (a) {
+      a.addEventListener('click', function (e) {
+        e.preventDefault();
+        var lang = a.getAttribute('data-lang');
+        document.querySelectorAll('nav a').forEach(function (x) {
+          x.classList.toggle('active', x === a);
+        });
+        document.querySelectorAll('section.lang').forEach(function (s) {
+          s.classList.toggle('active', s.id === 'lang-' + lang);
+        });
+      });
+    });
+  </script>
+</body>
+</html>
