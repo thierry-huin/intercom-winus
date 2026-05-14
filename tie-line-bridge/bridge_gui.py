@@ -1222,15 +1222,20 @@ class BridgeApp:
         if not server:
             messagebox.showwarning("Config", "Enter the server URL")
             return
-        creds = None
-        for row in self.channel_rows:
-            u = row.user_var.get().strip()
-            p = row.pass_var.get().strip()
-            if u and p:
-                creds = (u, p)
-                break
+        # Prefer admin credentials (from Login dialog) over channel creds.
+        # Channel bridge users can also fetch /directory (it only requires
+        # authMiddleware), but admin creds are more reliable and avoid
+        # confusion when the channel user doesn't exist yet on the server.
+        creds = getattr(self, '_admin_creds', None)
         if not creds:
-            messagebox.showwarning("Config", "Configure at least one channel with username/password")
+            for row in self.channel_rows:
+                u = row.user_var.get().strip()
+                p = row.pass_var.get().strip()
+                if u and p:
+                    creds = (u, p)
+                    break
+        if not creds:
+            messagebox.showwarning("Config", "Use \ud83d\udd12 Login first, or configure at least one channel with username/password")
             return
         self.status_var.set("Loading users...")
         threading.Thread(target=self._fetch_directory_bg, args=(server, creds), daemon=True).start()

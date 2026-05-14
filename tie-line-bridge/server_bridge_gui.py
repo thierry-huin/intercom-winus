@@ -68,17 +68,7 @@ class LinkRow:
                                        text_color=COLOR_DIM, width=24)
         self.status_dot.grid(row=0, column=col, padx=2); col += 1
 
-        # Side A
-        self.a_user_var = tk.StringVar()
-        self.a_user = ctk.CTkEntry(self.frame, textvariable=self.a_user_var, width=95,
-                                    placeholder_text="bridge user", height=28, font=("SF Pro Display", 11))
-        self.a_user.grid(row=0, column=col, padx=2, pady=3); col += 1
-
-        self.a_pass_var = tk.StringVar()
-        self.a_pass = ctk.CTkEntry(self.frame, textvariable=self.a_pass_var, width=70,
-                                    placeholder_text="pass", show="•", height=28)
-        self.a_pass.grid(row=0, column=col, padx=2, pady=3); col += 1
-
+        # Side A: Target → Bridge (audio flow: user → bridge)
         self.a_ttype_var = tk.StringVar(value="user")
         self.a_ttype = ctk.CTkComboBox(self.frame, variable=self.a_ttype_var, values=["user","group"],
                                         width=65, height=26, state="readonly", font=("SF Pro Display",10),
@@ -90,10 +80,23 @@ class LinkRow:
                                       height=26, state="readonly", font=("SF Pro Display",10))
         self.a_tid.grid(row=0, column=col, padx=2, pady=3); col += 1
 
-        ctk.CTkLabel(self.frame, text="↔", font=("Arial",14), text_color=COLOR_DIM,
-                     width=20).grid(row=0, column=col, padx=1); col += 1
+        ctk.CTkLabel(self.frame, text="→", font=("Arial",14), text_color=COLOR_ACCENT,
+                     width=16).grid(row=0, column=col, padx=1); col += 1
 
-        # Side B
+        self.a_user_var = tk.StringVar()
+        self.a_user = ctk.CTkEntry(self.frame, textvariable=self.a_user_var, width=95,
+                                    placeholder_text="bridge user", height=28, font=("SF Pro Display", 11))
+        self.a_user.grid(row=0, column=col, padx=2, pady=3); col += 1
+
+        self.a_pass_var = tk.StringVar()
+        self.a_pass = ctk.CTkEntry(self.frame, textvariable=self.a_pass_var, width=70,
+                                    placeholder_text="pass", show="•", height=28)
+        self.a_pass.grid(row=0, column=col, padx=2, pady=3); col += 1
+
+        ctk.CTkLabel(self.frame, text="↔", font=("Arial",16,"bold"), text_color=COLOR_ACCENT2,
+                     width=24).grid(row=0, column=col, padx=2); col += 1
+
+        # Side B: Bridge → Target (audio flow: bridge → user)
         self.b_user_var = tk.StringVar()
         self.b_user = ctk.CTkEntry(self.frame, textvariable=self.b_user_var, width=95,
                                     placeholder_text="bridge user", height=28, font=("SF Pro Display", 11))
@@ -103,6 +106,9 @@ class LinkRow:
         self.b_pass = ctk.CTkEntry(self.frame, textvariable=self.b_pass_var, width=70,
                                     placeholder_text="pass", show="•", height=28)
         self.b_pass.grid(row=0, column=col, padx=2, pady=3); col += 1
+
+        ctk.CTkLabel(self.frame, text="→", font=("Arial",14), text_color=COLOR_ORANGE,
+                     width=16).grid(row=0, column=col, padx=1); col += 1
 
         self.b_ttype_var = tk.StringVar(value="user")
         self.b_ttype = ctk.CTkComboBox(self.frame, variable=self.b_ttype_var, values=["user","group"],
@@ -189,7 +195,8 @@ class LinkRow:
             elif a_ok or b_ok:    self.status_dot.configure(text_color=COLOR_ORANGE)
             else:                 self.status_dot.configure(text_color=COLOR_RED)
             self.pkt_label.configure(text="A↔B")
-        # Username collision
+        # Username collision: red + block connect when another instance owns the slot
+        any_collision = False
         for side in ("a","b"):
             entry = self.a_user if side=="a" else self.b_user
             uname = (self.a_user_var if side=="a" else self.b_user_var).get().strip()
@@ -198,8 +205,14 @@ class LinkRow:
                       ((side=="a" and link.a.connected) or (side=="b" and link.b.connected)))
             if uname and uname in online and not we_own:
                 entry.configure(fg_color=COLOR_RED, text_color="white")
+                any_collision = True
             else:
                 entry.configure(fg_color=("#343638","#343638"), text_color=COLOR_TEXT)
+        # Block the play button when a username is taken by another bridge instance
+        if any_collision and link is None:
+            self.connect_btn.configure(state="disabled")
+        elif link is None:
+            self.connect_btn.configure(state="normal")
 
     def _on_connect_click(self):
         if self.link is not None:
@@ -238,6 +251,7 @@ class ServerBridgeApp(ctk.CTk):
         self._link_tasks = []
         self._online_a = set()
         self._online_b = set()
+        self._online_poll_timer = None
         ctk.set_appearance_mode("dark")
 
         # ── Header ──
@@ -295,8 +309,8 @@ class ServerBridgeApp(ctk.CTk):
         # ── Column headers ──
         ch = ctk.CTkFrame(self, fg_color="transparent")
         ch.pack(fill="x", padx=14, pady=(4,0))
-        for text, w in [("#",28),("●",24),("User A",95),("Pass A",70),("Type",65),("Target A",140),
-                        ("",20),("User B",95),("Pass B",70),("Type",65),("Target B",140),("",50),("",30)]:
+        for text, w in [("#",28),("●",24),("Type",65),("Target A",140),("→",16),("Bridge A",95),("Pass",70),
+                        ("↔",24),("Bridge B",95),("Pass",70),("→",16),("Type",65),("Target B",140),("",50),("",30)]:
             ctk.CTkLabel(ch, text=text, font=("SF Pro Display",9), text_color=COLOR_DIM,
                          width=w).pack(side="left", padx=2)
 
@@ -313,6 +327,7 @@ class ServerBridgeApp(ctk.CTk):
 
         self._load_config()
         self._poll_status()
+        self._start_online_polling()
 
     # ── Config ──
 
@@ -477,8 +492,98 @@ class ServerBridgeApp(ctk.CTk):
 
     def _stop_single(self, idx):
         r = self.rows[idx]
-        if r.link: self._loop.call_soon_threadsafe(r.link.stop); r.link = None
-        r.set_enabled(True); r.update_connect_btn()
+        link = r.link
+        if link and self._loop:
+            # Signal stop and wait for the task to finish before clearing state
+            self._loop.call_soon_threadsafe(link.stop)
+            # Find and remove the task from our list
+            for t in list(self._link_tasks):
+                if not t.done():
+                    try:
+                        self._loop.call_soon_threadsafe(t.cancel)
+                    except Exception:
+                        pass
+            # Delay clearing so the async loop has time to process the stop.
+            # _poll_status will update the button once link.a/b.connected go False.
+            def _finish_stop():
+                r.link = None
+                r.set_enabled(True)
+                r.update_connect_btn()
+            self.after(1000, _finish_stop)
+        else:
+            r.link = None
+            r.set_enabled(True)
+            r.update_connect_btn()
+
+    # ── Online status polling (every 5s) ──
+
+    def _start_online_polling(self):
+        self._poll_online()
+
+    def _poll_online(self):
+        """Periodically refresh which bridge usernames are online on each
+        server, so the collision detection (red highlight + disabled button)
+        stays current without requiring a manual ↻ Targets click."""
+        # Reuse the same fetch logic but only update the online sets,
+        # not the full directory (avoids overwriting dropdown selections).
+        threading.Thread(target=self._fetch_online_bg, daemon=True).start()
+        self._online_poll_timer = self.after(5000, self._poll_online)
+
+    def _fetch_online_bg(self):
+        async def fetch_online(url, user, pwd):
+            if not url or not user: return None
+            conn = aiohttp.TCPConnector(ssl=False)
+            timeout = aiohttp.ClientTimeout(total=5)
+            try:
+                async with aiohttp.ClientSession(connector=conn, timeout=timeout) as s:
+                    async with s.post(f"{url}/api/auth/login",
+                                      json={"username":user,"password":pwd,"client_type":"bridge"}) as r:
+                        if r.status != 200: return None
+                        token = (await r.json())["token"]
+                    async with s.get(f"{url}/api/rooms/my-targets",
+                                     headers={"Authorization":f"Bearer {token}"}) as r:
+                        if r.status != 200: return None
+                        tdata = await r.json()
+                    try:
+                        async with s.get(f"{url}/api/admin/online",
+                                         headers={"Authorization":f"Bearer {token}"}) as r2:
+                            if r2.status == 200:
+                                odata = await r2.json()
+                                oids = set(odata.get("userIds",[]))
+                                names = set()
+                                for u in tdata.get("users",[]):
+                                    if u["id"] in oids: names.add(u.get("username",""))
+                                return names
+                    except: pass
+            except: pass
+            return None
+
+        a_user = self.srv_a_user_var.get().strip()
+        a_pass = self.srv_a_pass_var.get().strip()
+        b_user = self.srv_b_user_var.get().strip()
+        b_pass = self.srv_b_pass_var.get().strip()
+        # Fallback to first link creds
+        if not a_user or not b_user:
+            for r in self.rows:
+                cfg = r.get_config()
+                if cfg["a_username"] and not a_user: a_user,a_pass = cfg["a_username"],cfg["a_password"]
+                if cfg["b_username"] and not b_user: b_user,b_pass = cfg["b_username"],cfg["b_password"]
+
+        oa = ob = None
+        try:
+            loop = asyncio.new_event_loop()
+            oa = loop.run_until_complete(fetch_online(self.srv_a_var.get().strip(), a_user, a_pass))
+            ob = loop.run_until_complete(fetch_online(self.srv_b_var.get().strip(), b_user, b_pass))
+            loop.close()
+        except: pass
+
+        def apply():
+            if oa is not None: self._online_a = oa
+            if ob is not None: self._online_b = ob
+            for r in self.rows:
+                r.set_online_users("a", self._online_a)
+                r.set_online_users("b", self._online_b)
+        self.after(0, apply)
 
     def _poll_status(self):
         for r in self.rows: r.update_status(); r.update_connect_btn()

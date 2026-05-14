@@ -89,7 +89,7 @@ services:
       - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
       - MEDIASOUP_ANNOUNCED_IPS=${MEDIASOUP_ANNOUNCED_IPS:-}
-      - TURN_PORT=3478
+      - TURN_PORT=${TURN_PORT:-3478}
       - TURN_USER=${TURN_USER:-intercom}
       - TURN_PASSWORD=${TURN_PASSWORD:-intercom2024}
       - INTERCOM_HOST_DIR=/opt/winus-intercom
@@ -143,7 +143,9 @@ services:
           exit 1
         fi
         echo "TURN external-ip: $$RESOLVED_IP / ${LOCAL_IP}"
+        echo "TURN listening on port ${TURN_PORT:-3478}"
         exec turnserver -c /etc/coturn/turnserver.conf \
+          --listening-port=${TURN_PORT:-3478} \
           --user=${TURN_USER:-intercom}:${TURN_PASSWORD:-intercom2024} \
           --external-ip=$$RESOLVED_IP/${LOCAL_IP}
 

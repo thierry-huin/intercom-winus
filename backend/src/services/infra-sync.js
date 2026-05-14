@@ -122,8 +122,20 @@ async function writeEnv(updates) {
   const final = lines.join('\n') + '\n';
 
   const tmp = ENV_PATH + '.tmp';
-  await fsp.writeFile(tmp, final, { mode: 0o644 });
-  await fsp.rename(tmp, ENV_PATH);
+  try {
+    await fsp.writeFile(tmp, final, { mode: 0o644 });
+    await fsp.rename(tmp, ENV_PATH);
+  } catch (e) {
+    // EBUSY: .env is a Docker bind-mount — atomic rename is not possible.
+    // Fall back to writing directly to the file.
+    if (e.code === 'EBUSY') {
+      warn(`rename EBUSY (bind-mount), writing directly to ${ENV_PATH}`);
+      await fsp.writeFile(ENV_PATH, final, { mode: 0o644 });
+      try { await fsp.unlink(tmp); } catch (_) {}
+    } else {
+      throw e;
+    }
+  }
   log(`updated ${Object.keys(updates).join(',')} in ${ENV_PATH}`);
   return { ok: true, path: ENV_PATH, keys: Object.keys(updates) };
 }
@@ -224,7 +236,7 @@ function recreateContainers(names) {
     return Promise.resolve({ ok: true, skipped: true });
   }
   return new Promise((resolve) => {
-    const args = ['compose', '-f', COMPOSE_FILE, 'up', '-d', ...names];
+    const args = ['compose', '-f', COMPOSE_FILE, 'up', '-d', '--no-build', ...names];
     log(`docker ${args.join(' ')}`);
     const p = spawn('docker', args, { cwd: '/app' });
     let stderr = '';

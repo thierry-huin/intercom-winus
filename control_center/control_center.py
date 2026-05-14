@@ -748,6 +748,16 @@ class ControlCenter:
                       command=self._deploy_remote_logs
                       ).pack(side="left", padx=4)
 
+        # Row 2: Proxmox deploy
+        act2 = ctk.CTkFrame(parent, fg_color="transparent")
+        act2.pack(fill="x", padx=14, pady=2)
+        ctk.CTkButton(act2, text="📦 Subir + deploy Proxmox tar.gz",
+                      width=280, height=32,
+                      font=("SF Pro Display", 12, "bold"),
+                      fg_color=COLOR_ACCENT, hover_color="#6a25d0",
+                      command=self._deploy_upload_proxmox
+                      ).pack(side="left", padx=4)
+
     def _ssh_port(self) -> str:
         """Return the configured SSH port, or empty string if it's the
         default (22) so we don't bother adding `-p 22` to every command."""
@@ -938,6 +948,42 @@ class ControlCenter:
         self._run_remote_sudo(
             f"sudo apt install -y /tmp/{fname}",
             title=f"ssh apt install /tmp/{fname}",
+        )
+
+    def _deploy_upload_proxmox(self):
+        """Upload the most recent Proxmox export tar.gz and run deploy-proxmox.sh remotely."""
+        candidates = sorted(
+            PROJECT_DIR.glob("winus-intercom-server-*.tar.gz"),
+            key=lambda p: p.stat().st_mtime, reverse=True,
+        )
+        if not candidates:
+            self.log(
+                "✖ No hay ningún export Proxmox. Usa Build → 📦 Export Proxmox primero.",
+                level="error",
+            )
+            return
+        latest = candidates[0]
+        size_mb = latest.stat().st_size / (1024 * 1024)
+        target = self._ssh_target()
+        self.log(
+            f"▸ [proxmox] {latest.name} ({size_mb:,.1f} MB) → {target}:/tmp/",
+            level="info",
+        )
+        scp_cmd = ["scp", *self._scp_args(), str(latest),
+                   f"{target}:/tmp/{latest.name}"]
+        scp_cmd, env = self._wrap_with_sshpass(scp_cmd)
+        self.runner.run(scp_cmd, env=env,
+                         title=f"scp [proxmox] {latest.name} → {target}")
+        self.root.after(500, lambda: self._chain_proxmox_deploy(latest.name))
+
+    def _chain_proxmox_deploy(self, fname: str):
+        if self.runner.busy:
+            self.root.after(500, lambda: self._chain_proxmox_deploy(fname))
+            return
+        # Extract + run deploy script on remote
+        self._run_remote_sudo(
+            f"cd /tmp && tar xzf {fname} && cd winus-intercom-deploy-* && sudo bash deploy-proxmox.sh",
+            title=f"ssh deploy-proxmox.sh",
         )
 
     def _deploy_rebuild_backend(self):
