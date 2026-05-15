@@ -46,6 +46,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   final _turnUserCtrl = TextEditingController();
   final _turnPassCtrl = TextEditingController();
   final _publicDomainCtrl = TextEditingController();
+  final _httpsPortCtrl = TextEditingController(text: '8443');
+  final _httpPortCtrl = TextEditingController(text: '8080');
   final _newIpCtrl = TextEditingController();
   bool _configLoading = false;
   bool _configSaving = false;
@@ -117,6 +119,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     _turnUserCtrl.dispose();
     _turnPassCtrl.dispose();
     _publicDomainCtrl.dispose();
+    _httpsPortCtrl.dispose();
+    _httpPortCtrl.dispose();
     _newIpCtrl.dispose();
     super.dispose();
   }
@@ -136,6 +140,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         _turnUserCtrl.text = cfg['turn_user'] ?? 'intercom';
         _turnPassCtrl.text = cfg['turn_password'] ?? '';
         _publicDomainCtrl.text = cfg['public_domain'] ?? '';
+        _httpsPortCtrl.text = cfg['https_port'] ?? '8443';
+        _httpPortCtrl.text = cfg['http_port'] ?? '8080';
         _lastSyncError = (cfg['last_sync_error'] as String? ?? '').trim();
       });
     } catch (e) {
@@ -155,6 +161,8 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         'turn_user': _turnUserCtrl.text.trim(),
         'turn_password': _turnPassCtrl.text,
         'public_domain': _publicDomainCtrl.text.trim(),
+        'https_port': _httpsPortCtrl.text.trim(),
+        'http_port': _httpPortCtrl.text.trim(),
       });
       // Backend returns `sync: { coturn: 'queued'|'skipped', nginx: ... }`.
       // Build a human-friendly summary for the SnackBar.
@@ -2062,6 +2070,34 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                 label: 'TURN Password',
                 hint: '••••••••',
                 obscureText: true,
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        // ---- HTTP/HTTPS Ports ----
+        _settingsSection(
+          icon: Icons.http,
+          title: 'Server Ports',
+          subtitle: 'HTTP and HTTPS ports for the nginx reverse proxy. Changing recreates the nginx container.',
+          child: Row(
+            children: [
+              Expanded(
+                child: _settingsField(
+                  controller: _httpsPortCtrl,
+                  label: 'HTTPS Port',
+                  hint: '8443',
+                  keyboardType: TextInputType.number,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: _settingsField(
+                  controller: _httpPortCtrl,
+                  label: 'HTTP Port',
+                  hint: '8080',
+                  keyboardType: TextInputType.number,
+                ),
               ),
             ],
           ),

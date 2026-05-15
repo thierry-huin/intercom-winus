@@ -236,7 +236,7 @@ function recreateContainers(names) {
     return Promise.resolve({ ok: true, skipped: true });
   }
   return new Promise((resolve) => {
-    const args = ['compose', '-f', COMPOSE_FILE, 'up', '-d', '--no-build', ...names];
+    const args = ['compose', '--project-name', 'winus-intercom', '-f', COMPOSE_FILE, 'up', '-d', '--no-build', '--no-deps', '--force-recreate', ...names];
     log(`docker ${args.join(' ')}`);
     const p = spawn('docker', args, { cwd: '/app' });
     let stderr = '';

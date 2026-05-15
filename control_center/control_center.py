@@ -509,6 +509,12 @@ class ControlCenter:
                       command=lambda: dc("up", "-d", "--build", "backend",
                                           title="rebuild backend")
                       ).pack(side="left", padx=4)
+        ctk.CTkButton(btns, text="⟳ Recreate nginx", width=160, height=34,
+                      fg_color=COLOR_ORANGE, hover_color="#ff8f00",
+                      text_color="#1a1a2e",
+                      command=lambda: dc("up", "-d", "--force-recreate", "nginx",
+                                          title="recreate nginx")
+                      ).pack(side="left", padx=4)
 
         # Logs by service
         ctk.CTkLabel(parent, text="Ver logs (últimas 100 líneas)",
@@ -713,45 +719,43 @@ class ControlCenter:
                       fg_color=COLOR_DIM,
                       command=self._save_deploy_cfg).grid(row=0, column=6, padx=(12, 0))
 
-        # Actions
+        # Actions — Row 1: SSH + .deb deploy
         ctk.CTkLabel(parent, text="Acciones",
                      font=("SF Pro Display", 12),
                      text_color=COLOR_DIM).pack(anchor="w", padx=14, pady=(16, 2))
 
-        act = ctk.CTkFrame(parent, fg_color="transparent")
-        act.pack(fill="x", padx=14, pady=2)
-
-        ctk.CTkButton(act, text="🧪 Probar SSH", width=150, height=32,
+        act1 = ctk.CTkFrame(parent, fg_color="transparent")
+        act1.pack(fill="x", padx=14, pady=2)
+        ctk.CTkButton(act1, text="🧪 Probar SSH", width=150, height=32,
                       fg_color=COLOR_DIM,
                       command=self._deploy_test_ssh
                       ).pack(side="left", padx=4)
-        ctk.CTkButton(act, text="⬆ Subir + instalar slim .deb", width=220, height=32,
+        ctk.CTkButton(act1, text="⬆ Subir + instalar slim .deb", width=240, height=32,
                       fg_color=COLOR_GREEN, text_color="#1a1a2e",
                       command=self._deploy_upload_slim
                       ).pack(side="left", padx=4)
-        # Full .deb — same flow but ships the APK + Flutter web build, so
-        # the upload is much heavier (≈350 MB vs ≈8 MB). Useful when the
-        # remote also serves the user-facing app downloads (intercom.apk,
-        # winus_intercom.aab, web build for nginx).
-        ctk.CTkButton(act, text="⬆ Subir + instalar full .deb (APK)",
-                      width=260, height=32,
+        ctk.CTkButton(act1, text="⬆ Subir + instalar full .deb (APK)", width=260, height=32,
                       fg_color=COLOR_ACCENT2, hover_color="#00a0b0",
                       text_color="#1a1a2e",
                       command=self._deploy_upload_full
                       ).pack(side="left", padx=4)
-        ctk.CTkButton(act, text="🔨 Rebuild backend remoto", width=210, height=32,
+
+        # Row 2: Remote management
+        act2 = ctk.CTkFrame(parent, fg_color="transparent")
+        act2.pack(fill="x", padx=14, pady=2)
+        ctk.CTkButton(act2, text="🔨 Rebuild backend remoto", width=220, height=32,
                       fg_color=COLOR_ACCENT, hover_color="#6a25d0",
                       command=self._deploy_rebuild_backend
                       ).pack(side="left", padx=4)
-        ctk.CTkButton(act, text="📝 Logs remotos", width=150, height=32,
+        ctk.CTkButton(act2, text="📝 Logs remotos", width=150, height=32,
                       fg_color=COLOR_BLUE,
                       command=self._deploy_remote_logs
                       ).pack(side="left", padx=4)
 
-        # Row 2: Proxmox deploy
-        act2 = ctk.CTkFrame(parent, fg_color="transparent")
-        act2.pack(fill="x", padx=14, pady=2)
-        ctk.CTkButton(act2, text="📦 Subir + deploy Proxmox tar.gz",
+        # Row 3: Proxmox deploy
+        act3 = ctk.CTkFrame(parent, fg_color="transparent")
+        act3.pack(fill="x", padx=14, pady=2)
+        ctk.CTkButton(act3, text="📦 Subir + deploy Proxmox tar.gz",
                       width=280, height=32,
                       font=("SF Pro Display", 12, "bold"),
                       fg_color=COLOR_ACCENT, hover_color="#6a25d0",

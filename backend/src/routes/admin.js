@@ -657,6 +657,8 @@ router.get('/server-config', (req, res) => {
     turn_user:      getConfig('turn_user', process.env.TURN_USER || 'intercom'),
     turn_password:  getConfig('turn_password', process.env.TURN_PASSWORD || 'intercom2024'),
     public_domain:  getConfig('public_domain', process.env.PUBLIC_DOMAIN || ''),
+    https_port:     getConfig('https_port', process.env.HTTPS_PORT || '8443'),
+    http_port:      getConfig('http_port', process.env.HTTP_PORT || '8080'),
     // Surface the last infra-sync failure (if any) so the UI can
     // show a banner. Cleared on the next successful sync.
     last_sync_error: getConfig('last_sync_error', ''),
@@ -684,6 +686,8 @@ router.put('/server-config', (req, res) => {
     'turn_user',
     'turn_password',
     'public_domain',
+    'https_port',
+    'http_port',
   ];
 
   // Snapshot the current values BEFORE applying updates so we can decide
@@ -691,7 +695,10 @@ router.put('/server-config', (req, res) => {
   const before = {
     announced_ips: getConfig('announced_ips', ''),
     turn_host:     getConfig('turn_host', ''),
+    turn_port:     getConfig('turn_port', process.env.TURN_PORT || '3478'),
     public_domain: getConfig('public_domain', ''),
+    https_port:    getConfig('https_port', process.env.HTTPS_PORT || '8443'),
+    http_port:     getConfig('http_port', process.env.HTTP_PORT || '8080'),
   };
 
   for (const field of fields) {
@@ -703,14 +710,19 @@ router.put('/server-config', (req, res) => {
   const after = {
     announced_ips: getConfig('announced_ips', ''),
     turn_host:     getConfig('turn_host', ''),
+    turn_port:     getConfig('turn_port', process.env.TURN_PORT || '3478'),
     public_domain: getConfig('public_domain', ''),
+    https_port:    getConfig('https_port', process.env.HTTPS_PORT || '8443'),
+    http_port:     getConfig('http_port', process.env.HTTP_PORT || '8080'),
   };
 
   const ipsChanged    = before.announced_ips !== after.announced_ips;
   const turnChanged   = before.turn_host !== after.turn_host;
+  const portChanged   = before.turn_port !== after.turn_port;
   const domainChanged = before.public_domain !== after.public_domain;
+  const httpChanged   = before.https_port !== after.https_port || before.http_port !== after.http_port;
 
-  if (!ipsChanged && !turnChanged && !domainChanged) {
+  if (!ipsChanged && !turnChanged && !portChanged && !domainChanged && !httpChanged) {
     return res.json({ ok: true, sync: { coturn: 'skipped', nginx: 'skipped' } });
   }
 
@@ -727,35 +739,50 @@ router.put('/server-config', (req, res) => {
       const externalIp = await resolveHostToIp(externalSource);
       const localIp = pickPrivateIp(after.announced_ips) || externalIp;
 
-      const envResult = await writeEnv({
+      const envUpdate = {
         EXTERNAL_IP: externalIp,
         LOCAL_IP: localIp,
         MEDIASOUP_ANNOUNCED_IPS: after.announced_ips,
         PUBLIC_DOMAIN: after.public_domain || '',
-      });
+      };
+      if (portChanged) envUpdate.TURN_PORT = after.turn_port;
+      if (httpChanged) {
+        envUpdate.HTTPS_PORT = after.https_port;
+        envUpdate.HTTP_PORT = after.http_port;
+      }
+      const envResult = await writeEnv(envUpdate);
 
       const containers = [];
-      if (ipsChanged || turnChanged) containers.push('coturn');
+      if (ipsChanged || turnChanged || portChanged) containers.push('coturn');
 
       let certResult = { ok: true, skipped: true };
-      if (domainChanged || ipsChanged || turnChanged) {
+      if (domainChanged || ipsChanged || turnChanged || portChanged) {
         certResult = await regenerateCerts({
           externalIp,
           localIp,
           publicDomain: after.public_domain || '',
         });
-        if (certResult.ok && !certResult.skipped) containers.push('nginx');
       }
 
+      // Only recreate coturn from infra-sync. Nginx cannot be recreated
+      // from inside the backend container because Docker bind-mounts
+      // resolve relative to /app/ (inside the container) instead of
+      // /opt/winus-intercom/ (on the host), causing cert/web files to
+      // be missing. Nginx must be restarted from the host.
       const dockerResult = await recreateContainers(containers);
 
-      const errors = [envResult, certResult, dockerResult]
-        .filter((r) => r && r.ok === false)
-        .map((r) => r.reason || 'unknown')
-        .join(' | ');
-      setConfig('last_sync_error', errors);
+      const warnings = [];
+      if (envResult && !envResult.ok) warnings.push(envResult.reason || 'env write failed');
+      if (certResult && !certResult.ok) warnings.push(certResult.reason || 'cert regen failed');
+      if (dockerResult && !dockerResult.ok) warnings.push(dockerResult.reason || 'docker failed');
+      const needsNginxRestart = httpChanged || domainChanged ||
+        (certResult.ok && !certResult.skipped);
+      if (needsNginxRestart) {
+        warnings.push('Nginx needs manual restart: docker compose up -d --force-recreate nginx');
+      }
+      setConfig('last_sync_error', warnings.join(' | '));
       console.log('[server-config] sync done',
-        { externalIp, localIp, containers, errors: errors || 'none' });
+        { externalIp, localIp, containers, needsNginxRestart, errors: warnings.join(' | ') || 'none' });
     } catch (e) {
       console.error('[server-config] sync threw', e);
       setConfig('last_sync_error', e.message || String(e));
@@ -765,8 +792,8 @@ router.put('/server-config', (req, res) => {
   res.json({
     ok: true,
     sync: {
-      coturn: ipsChanged || turnChanged ? 'queued' : 'skipped',
-      nginx:  domainChanged || ipsChanged || turnChanged ? 'queued' : 'skipped',
+      coturn: ipsChanged || turnChanged || portChanged ? 'queued' : 'skipped',
+      nginx:  (domainChanged || httpChanged || ipsChanged) ? 'manual_restart_needed' : 'skipped',
     },
   });
 });
@@ -825,12 +852,27 @@ router.post('/import-config', (req, res) => {
       db.exec('DELETE FROM groups');
       db.exec('DELETE FROM users');
 
-      // Import users (with default password since we don't export hashes)
+      // Import users. Use bcrypt hash from the JSON password field if
+      // present (excel-to-json exports a plaintext password); otherwise
+      // fall back to the default '1234' hash.
       const insertUser = db.prepare(
         'INSERT INTO users (id, username, password_hash, display_name, role, room_id, color) VALUES (?, ?, ?, ?, ?, ?, ?)'
       );
       for (const u of data.users) {
-        insertUser.run(u.id, u.username, defaultHash, u.display_name, u.role || 'user', u.room_id, u.color || null);
+        if (!u.username) {
+          console.warn(`[Admin] Import: skipping user id=${u.id} — no username`);
+          continue;
+        }
+        const hash = u.password ? bcrypt.hashSync(u.password, 10) : defaultHash;
+        insertUser.run(
+          u.id,
+          u.username,
+          hash,
+          u.display_name || u.username,
+          u.role || 'user',
+          u.room_id ?? u.id,
+          u.color || null,
+        );
       }
 
       // Import groups

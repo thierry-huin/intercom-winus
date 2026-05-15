@@ -85,6 +85,8 @@ function initialize() {
   seedConfig('turn_port', process.env.TURN_PORT || '3478');
   seedConfig('turn_user', process.env.TURN_USER || 'intercom');
   seedConfig('turn_password', process.env.TURN_PASSWORD || 'intercom2024');
+  seedConfig('https_port', process.env.HTTPS_PORT || '8443');
+  seedConfig('http_port', process.env.HTTP_PORT || '8080');
 
   // Migration: add color column if not exists
   try {
