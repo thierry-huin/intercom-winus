@@ -61,6 +61,7 @@ void platformSetSidetoneLevel(double level) {
 void platformStartAudioFocusMonitor(bool enable) {}
 void platformOnAudioFocusLost(void Function() listener) {}
 void platformOnAudioFocusGained(void Function() listener) {}
+void platformOnHeadsetButton(void Function() listener) {}
 
 /// Open an external URL (mailto:, https:, wa.me, ...). On the web we use
 /// `window.open(_, '_blank')`; on native this is a no-op and the caller is

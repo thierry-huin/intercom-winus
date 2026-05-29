@@ -94,6 +94,7 @@ class IntercomProvider extends ChangeNotifier {
     // automatically resume afterwards.
     platformOnAudioFocusLost(_onAudioFocusLost);
     platformOnAudioFocusGained(_onAudioFocusGained);
+    platformOnHeadsetButton(_onHeadsetButton);
     // Refresh the device dropdown whenever the OS reports a hot-plug
     // (Bluetooth connect/disconnect, USB headset in/out, ...). Wrapped in
     // try/catch so a platform-side failure never aborts app launch.
@@ -749,6 +750,16 @@ class IntercomProvider extends ChangeNotifier {
   /// call, WhatsApp, FaceTime…). We release the mic so the other app can
   /// capture it and duck the incoming intercom consumers according to the
   /// user-configured level.
+  /// Called when the headset hardware button is pressed (BT play/pause,
+  /// wired inline button). Toggles mic mute so the user can control the
+  /// intercom without touching the phone screen.
+  void _onHeadsetButton() {
+    if (!_mediaReady) return;
+    toggleMicMute();
+    debugPrint('[Intercom] Headset button → mic ${_micMuted ? "MUTED" : "UNMUTED"}');
+    platformVibrate();
+  }
+
   void _onAudioFocusLost() {
     debugPrint('[Intercom] Audio focus lost — pausing mic, ducking intercom');
     _callReacquireTimer?.cancel();

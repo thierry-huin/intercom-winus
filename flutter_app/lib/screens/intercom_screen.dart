@@ -181,7 +181,7 @@ class _IntercomScreenState extends State<IntercomScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(auth.user?['display_name'] ?? 'Winus Intercom', style: const TextStyle(fontSize: 16)),
-                const Text('v3.4.3', style: TextStyle(fontSize: 10, color: AppColors.textSecondary)),
+                const Text('v3.5.0', style: TextStyle(fontSize: 10, color: AppColors.textSecondary)),
               ],
             ),
           ],
@@ -214,19 +214,21 @@ class _IntercomScreenState extends State<IntercomScreen> {
             ),
           // Mic mute button
           IconButton(
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
             icon: Icon(
               ic.micMuted ? Icons.mic_off : Icons.mic,
               color: ic.micMuted ? Colors.red.shade400 : AppColors.textPrimary,
-              size: 24,
+              size: 22,
             ),
             tooltip: ic.micMuted ? 'Unmute mic' : 'Mute mic',
             onPressed: ic.mediaReady ? () => ic.toggleMicMute() : null,
           ),
-          // Refresh user / group list. Pulls /api/rooms/my-targets again so
-          // a user created (or a permission granted) by the admin while
-          // we're connected appears immediately without having to log out.
+          // Refresh user / group list
           IconButton(
-            icon: const Icon(Icons.refresh),
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            icon: const Icon(Icons.refresh, size: 20),
             tooltip: 'Refresh users / groups',
             onPressed: ic.connected
                 ? () async {
@@ -290,31 +292,34 @@ class _IntercomScreenState extends State<IntercomScreen> {
               ],
             ),
           ),
-          // Settings (gear) — opens the bottom-sheet with mic/speaker pickers,
-          // column count, and hide-offline toggle.
+          // Settings (gear)
           IconButton(
-            icon: const Icon(Icons.settings),
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            icon: const Icon(Icons.settings, size: 20),
             tooltip: 'Settings',
             onPressed: () => _showSettingsSheet(context, ic),
           ),
-          // Info — opens the bundled user manual.
+          // Info
           IconButton(
-            icon: const Icon(Icons.info_outline),
+            padding: const EdgeInsets.symmetric(horizontal: 2),
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            icon: const Icon(Icons.info_outline, size: 20),
             tooltip: 'User manual',
             onPressed: () => Navigator.pushNamed(context, '/manual'),
           ),
           if (auth.isAdmin)
             IconButton(
               padding: const EdgeInsets.symmetric(horizontal: 2),
-              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-              icon: const Icon(Icons.admin_panel_settings),
+              constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+              icon: const Icon(Icons.admin_panel_settings, size: 20),
               tooltip: 'Admin',
               onPressed: () => Navigator.pushNamed(context, '/admin'),
             ),
           IconButton(
             padding: const EdgeInsets.symmetric(horizontal: 2),
-            constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-            icon: const Icon(Icons.logout),
+            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
+            icon: const Icon(Icons.logout, size: 20),
             tooltip: 'Logout',
             onPressed: () async {
               await ic.disconnect();

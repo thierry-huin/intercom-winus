@@ -1,6 +1,7 @@
 import Flutter
 import AVFoundation
 import AudioToolbox
+import MediaPlayer
 import UIKit
 import UserNotifications
 
@@ -55,6 +56,24 @@ class AudioChannelHandler: NSObject {
             name: AVAudioSession.interruptionNotification,
             object: nil
         )
+
+        // Headset button (play/pause on BT headsets / EarPods).
+        // MPRemoteCommandCenter captures the hardware button even when
+        // no MPNowPlayingSession is active.
+        let center = MPRemoteCommandCenter.shared()
+        center.togglePlayPauseCommand.isEnabled = true
+        center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            DispatchQueue.main.async {
+                self?.channel?.invokeMethod("headsetButtonPressed", arguments: nil)
+                NSLog("[IntercomAudio] Headset button pressed (togglePlayPause)")
+            }
+            return .success
+        }
+        // Activate a minimal audio session so the remote command center
+        // stays responsive even when no WebRTC track is playing yet.
+        let session = AVAudioSession.sharedInstance()
+        try? session.setCategory(.playAndRecord, mode: .voiceChat, options: [.allowBluetooth, .defaultToSpeaker, .mixWithOthers])
+        try? session.setActive(true)
 
         // Ask the user for notification permission up-front so the ring
         // banner has a chance to appear when the app is backgrounded.

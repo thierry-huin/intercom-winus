@@ -11,7 +11,7 @@ const router = express.Router();
 const loginAttempts = new Map(); // ip -> { count, firstAttempt, blockedUntil }
 const MAX_ATTEMPTS = 5;
 const WINDOW_MS = 5 * 60 * 1000;    // 5 minutes
-const BLOCK_MS = 15 * 60 * 1000;    // 15 minutes block
+const BLOCK_MS = 5 * 60 * 1000;     // 5 minutes block
 
 function getRealIp(req) {
   return req.headers['x-forwarded-for']?.split(',')[0]?.trim() || req.ip || 'unknown';
@@ -69,14 +69,19 @@ router.post('/login', (req, res) => {
   const { username, password } = req.body;
   const ip = getRealIp(req);
 
-  // Rate limit check
-  const limit = checkRateLimit(ip);
-  if (!limit.allowed) {
-    return res.status(429).json({ error: `Too many attempts. Try again in ${limit.remainMin} min` });
-  }
-
   if (!username || !password) {
     return res.status(400).json({ error: 'Usuario y contraseña requeridos' });
+  }
+
+  // Superadmin always bypasses rate limiting so recovery access is never locked out.
+  const preCheck = db.prepare('SELECT role FROM users WHERE username = ?').get(username);
+  const isSuperadmin = preCheck && preCheck.role === 'superadmin';
+
+  if (!isSuperadmin) {
+    const limit = checkRateLimit(ip);
+    if (!limit.allowed) {
+      return res.status(429).json({ error: `Too many attempts. Try again in ${limit.remainMin} min` });
+    }
   }
 
   const user = db.prepare('SELECT * FROM users WHERE username = ?').get(username);
@@ -85,7 +90,7 @@ router.post('/login', (req, res) => {
     return res.status(401).json({ error: 'Credenciales inválidas' });
   }
 
-  // Success: clear attempts
+  // Success: clear attempts (superadmin was never blocked, but clean up anyway)
   clearAttempts(ip);
 
   // Bridge users can only authenticate from the bridge application

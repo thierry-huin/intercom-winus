@@ -20,6 +20,7 @@ import android.telephony.PhoneStateListener
 import android.telephony.TelephonyCallback
 import android.telephony.TelephonyManager
 import android.util.Log
+import android.view.KeyEvent
 import android.util.Rational
 import androidx.core.app.ActivityCompat
 import io.flutter.embedding.android.FlutterActivity
@@ -780,6 +781,22 @@ class MainActivity : FlutterActivity() {
             audioManager.requestAudioFocus(focusRequest)
             audioFocusRequest = focusRequest
         }
+    }
+
+    // ======================== HEADSET BUTTON ========================
+
+    override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
+        if (keyCode == KeyEvent.KEYCODE_HEADSETHOOK ||
+            keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
+            runOnUiThread {
+                try {
+                    audioChannel?.invokeMethod("headsetButtonPressed", null)
+                    Log.i("IntercomAudio", "Headset button pressed (keyCode=$keyCode)")
+                } catch (_: Exception) {}
+            }
+            return true // consume the event
+        }
+        return super.onKeyDown(keyCode, event)
     }
 
     override fun onUserLeaveHint() {

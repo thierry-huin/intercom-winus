@@ -52,6 +52,14 @@ void _ensureAudioChannelHandler() {
           }
         }
         break;
+      case 'headsetButtonPressed':
+        for (final cb
+            in List<void Function()>.from(_headsetButtonListeners)) {
+          try { cb(); } catch (e) {
+            debugPrint('[Platform] headsetButton listener error: $e');
+          }
+        }
+        break;
     }
     return null;
   });
@@ -78,6 +86,15 @@ void platformOnAudioFocusLost(void Function() listener) {
 void platformOnAudioFocusGained(void Function() listener) {
   _ensureAudioChannelHandler();
   _audioFocusGainedListeners.add(listener);
+}
+
+/// Listeners invoked when the headset hardware button is pressed
+/// (Bluetooth play/pause, wired inline button).
+final List<void Function()> _headsetButtonListeners = [];
+
+void platformOnHeadsetButton(void Function() listener) {
+  _ensureAudioChannelHandler();
+  _headsetButtonListeners.add(listener);
 }
 
 /// Native stub: the admin actions that open external URLs are gated behind
