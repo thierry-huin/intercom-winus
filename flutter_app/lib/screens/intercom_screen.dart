@@ -181,7 +181,7 @@ class _IntercomScreenState extends State<IntercomScreen> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(auth.user?['display_name'] ?? 'Winus Intercom', style: const TextStyle(fontSize: 16)),
-                const Text('v3.5.0', style: TextStyle(fontSize: 10, color: AppColors.textSecondary)),
+const Text('v3.6.5', style: TextStyle(fontSize: 10, color: AppColors.textSecondary)),
               ],
             ),
           ],
@@ -253,42 +253,33 @@ class _IntercomScreenState extends State<IntercomScreen> {
                   }
                 : null,
           ),
-          // Status chip
+          // Status LED + RTT
           Container(
-            margin: const EdgeInsets.symmetric(vertical: 10, horizontal: 4),
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-            decoration: BoxDecoration(
-              color: ic.micMuted
-                  ? Colors.red.shade900.withValues(alpha: 0.3)
-                  : Colors.white.withValues(alpha: 0.15),
-              borderRadius: BorderRadius.circular(20),
-              border: Border.all(
-                color: ic.micMuted ? Colors.red.shade700 : AppColors.border,
-              ),
-            ),
+            margin: const EdgeInsets.symmetric(horizontal: 4),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(Icons.circle, size: 8,
+                Container(
+                  width: 10,
+                  height: 10,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
                     color: ic.micMuted
                         ? Colors.red.shade400
                         : ic.connected && ic.mediaReady
                             ? Colors.green
-                            : AppColors.disconnectedGreyLight),
-                const SizedBox(width: 6),
-                Text(
-                  ic.micMuted
-                      ? 'MIC OFF'
-                      : ic.mediaReady
-                          ? (ic.rttMs != null
-                              ? '${ic.rttMs!.round()} ms'
-                              : '— ms')
-                          : ic.connected ? 'Loading...' : 'Connecting...',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: ic.micMuted ? Colors.red.shade300 : null,
+                            : AppColors.disconnectedGreyLight,
+                    boxShadow: [
+                      if (ic.connected && ic.mediaReady && !ic.micMuted)
+                        BoxShadow(color: Colors.green.withValues(alpha: 0.5), blurRadius: 4),
+                    ],
                   ),
                 ),
+                if (ic.mediaReady && ic.rttMs != null && !ic.micMuted) ...[
+                  const SizedBox(width: 4),
+                  Text('${ic.rttMs!.round()}',
+                      style: const TextStyle(fontSize: 10, color: AppColors.textSecondary)),
+                ],
               ],
             ),
           ),
@@ -299,14 +290,6 @@ class _IntercomScreenState extends State<IntercomScreen> {
             icon: const Icon(Icons.settings, size: 20),
             tooltip: 'Settings',
             onPressed: () => _showSettingsSheet(context, ic),
-          ),
-          // Info
-          IconButton(
-            padding: const EdgeInsets.symmetric(horizontal: 2),
-            constraints: const BoxConstraints(minWidth: 34, minHeight: 34),
-            icon: const Icon(Icons.info_outline, size: 20),
-            tooltip: 'User manual',
-            onPressed: () => Navigator.pushNamed(context, '/manual'),
           ),
           if (auth.isAdmin)
             IconButton(

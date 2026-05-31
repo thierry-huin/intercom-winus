@@ -2,7 +2,10 @@ package tv.huin.intercom
 
 import android.Manifest
 import android.app.PictureInPictureParams
+import android.content.BroadcastReceiver
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.media.AudioAttributes
@@ -36,6 +39,18 @@ class MainActivity : FlutterActivity() {
     private var audioChannel: MethodChannel? = null
     private var deviceCallback: AudioDeviceCallback? = null
     private var ringtone: Ringtone? = null
+
+    // BT headset button: track active BT device so we can detect + undo
+    // SCO disconnects caused by the headset button (HFP profile).
+    private var activeBtDeviceId: Int? = null
+    private var lastHeadsetButtonMs = 0L
+    private val HEADSET_BUTTON_DEBOUNCE_MS = 1500L
+    private var scoReceiverRegistered = false
+    private var scoReconnecting = false
+    private val BT_DEVICE_TYPES = setOf(
+        AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+        AudioDeviceInfo.TYPE_BLE_HEADSET
+    )
 
     // Audio-focus monitoring for VoIP/GSM calls. We keep a persistent
     // AudioFocusRequest (separate from the MEDIA one used by
@@ -156,6 +171,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun notifyDevicesChanged() {
+        if (scoReconnecting) return // Suppress during BT button reconnect
         runOnUiThread {
             try {
                 audioChannel?.invokeMethod("devicesChanged", null)
@@ -173,6 +189,10 @@ class MainActivity : FlutterActivity() {
             } catch (_: Exception) {}
         }
         deviceCallback = null
+        if (scoReceiverRegistered) {
+            try { unregisterReceiver(scoReceiver) } catch (_: Exception) {}
+            scoReceiverRegistered = false
+        }
         try { stopAudioFocusMonitor() } catch (_: Exception) {}
         audioChannel = null
         super.onDestroy()
@@ -640,13 +660,12 @@ class MainActivity : FlutterActivity() {
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             if (deviceId == null) {
+                activeBtDeviceId = null
                 am.clearCommunicationDevice()
                 return true
             }
-            // Synthetic "Phone mic" entry — reset to system default route
-            // (builtin mic paired with earpiece/speaker). The UI's cross-sync
-            // then picks up the new output in the speaker dropdown.
             if (deviceId == -10) {
+                activeBtDeviceId = null
                 am.clearCommunicationDevice()
                 Log.i("IntercomAudio", "Route -> default (Phone mic)")
                 return true
@@ -655,7 +674,10 @@ class MainActivity : FlutterActivity() {
             val commDevice = am.availableCommunicationDevices.firstOrNull { it.id == deviceId }
             if (commDevice != null) {
                 val ok = am.setCommunicationDevice(commDevice)
-                Log.i("IntercomAudio", "setCommunicationDevice(${commDevice.productName}/${commDevice.type}) -> $ok")
+                if (ok) {
+                    activeBtDeviceId = if (commDevice.type in BT_DEVICE_TYPES) commDevice.id else null
+                }
+                Log.i("IntercomAudio", "setCommunicationDevice(${commDevice.productName}/${commDevice.type}) -> $ok (bt=${activeBtDeviceId})")
                 return ok
             }
             // Device is a raw output (A2DP speaker/headphones like Bose, BLE, ...).
@@ -683,7 +705,10 @@ class MainActivity : FlutterActivity() {
                 }
                 if (fallback != null) {
                     val ok = am.setCommunicationDevice(fallback)
-                    Log.i("IntercomAudio", "Fallback setCommunicationDevice(${fallback.productName}/${fallback.type}) -> $ok")
+                    if (ok) {
+                        activeBtDeviceId = if (fallback.type in BT_DEVICE_TYPES) fallback.id else null
+                    }
+                    Log.i("IntercomAudio", "Fallback setCommunicationDevice(${fallback.productName}/${fallback.type}) -> $ok (bt=${activeBtDeviceId})")
                     return ok
                 }
                 Log.w("IntercomAudio", "No communication fallback for output ${anyOutput.type}")
@@ -696,20 +721,23 @@ class MainActivity : FlutterActivity() {
         // Legacy API < 31
         @Suppress("DEPRECATION")
         when (deviceId) {
-            -1, null -> { // Earpiece (also used when deviceId is null)
+            -1, null -> {
+                activeBtDeviceId = null
                 am.stopBluetoothSco()
                 am.isBluetoothScoOn = false
                 am.isSpeakerphoneOn = false
             }
-            -2 -> { // Speakerphone
+            -2 -> {
+                activeBtDeviceId = null
                 am.stopBluetoothSco()
                 am.isBluetoothScoOn = false
                 am.isSpeakerphoneOn = true
             }
-            -3 -> { // Bluetooth SCO
+            -3 -> {
                 am.isSpeakerphoneOn = false
                 am.startBluetoothSco()
                 am.isBluetoothScoOn = true
+                activeBtDeviceId = -3
             }
             else -> return false
         }
@@ -717,6 +745,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun clearCommunicationDevice() {
+        activeBtDeviceId = null
         val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             am.clearCommunicationDevice()
@@ -783,18 +812,147 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    // ======================== HEADSET BUTTON ========================
+    // ======================== BT HEADSET BUTTON (SCO MONITOR) ========================
+
+    /**
+     * BroadcastReceiver that detects when Android's BT stack disconnects the
+     * SCO link (typical trigger: pressing the headset button while the app is
+     * in MODE_IN_COMMUNICATION). When the BT device is still reachable we
+     * reconnect immediately and treat the event as a mic-toggle request.
+     */
+    private val scoReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action != AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED) return
+            val state = intent.getIntExtra(AudioManager.EXTRA_SCO_AUDIO_STATE, -1)
+            Log.i("IntercomAudio", "SCO state=$state activeBt=$activeBtDeviceId")
+        if (state == AudioManager.SCO_AUDIO_STATE_DISCONNECTED && activeBtDeviceId != null) {
+                // Reconnect immediately to minimize the speaker blip.
+                scoReconnecting = true
+                val ok = reconnectBtDevice()
+                // Clear suppression flag after BT settles.
+                Handler(Looper.getMainLooper()).postDelayed({ scoReconnecting = false }, 500)
+                if (ok) dispatchHeadsetButton()
+            }
+        }
+    }
+
+    /** Try to re-route communication audio back to the tracked BT device. */
+    private fun reconnectBtDevice(): Boolean {
+        val btId = activeBtDeviceId ?: return false
+        val am = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val device = am.availableCommunicationDevices.firstOrNull { it.id == btId }
+            if (device != null) {
+                val ok = am.setCommunicationDevice(device)
+                Log.i("IntercomAudio", "BT SCO reconnect id=$btId -> $ok")
+                return ok
+            }
+            // Device gone → real disconnect, not a button press.
+            activeBtDeviceId = null
+            Log.i("IntercomAudio", "BT device $btId gone — real disconnect")
+            return false
+        }
+        @Suppress("DEPRECATION")
+        run {
+            am.startBluetoothSco()
+            am.isBluetoothScoOn = true
+        }
+        Log.i("IntercomAudio", "BT SCO reconnect via startBluetoothSco")
+        return true
+    }
+
+    /** Debounced dispatch to Flutter — prevents double-toggle from
+     *  MediaSession + SCO receiver firing for the same press. */
+    private fun dispatchHeadsetButton() {
+        val now = System.currentTimeMillis()
+        if (now - lastHeadsetButtonMs < HEADSET_BUTTON_DEBOUNCE_MS) return
+        lastHeadsetButtonMs = now
+        runOnUiThread {
+            try {
+                audioChannel?.invokeMethod("headsetButtonPressed", null)
+                Log.i("IntercomAudio", "Headset button → mic toggle")
+            } catch (_: Exception) {}
+        }
+    }
+
+    private fun registerScoReceiver() {
+        if (scoReceiverRegistered) return
+        try {
+            val filter = IntentFilter(AudioManager.ACTION_SCO_AUDIO_STATE_UPDATED)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                registerReceiver(scoReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            } else {
+                registerReceiver(scoReceiver, filter)
+            }
+            scoReceiverRegistered = true
+            Log.i("IntercomAudio", "SCO receiver registered")
+        } catch (e: Throwable) {
+            Log.w("IntercomAudio", "registerScoReceiver failed: $e")
+        }
+    }
+
+    // ======================== HEADSET BUTTON (MEDIA SESSION) ========================
+
+    private var mediaSessionRegistered = false
+
+    /**
+     * Register a MediaSession so we become the active media app and the
+     * system routes hardware media-button events to us instead of the
+     * last music player. Works for AVRCP-type BT devices and wired headsets.
+     * For HFP BT headsets in communication mode the SCO receiver above is
+     * the primary path.
+     */
+    private fun ensureMediaSession() {
+        if (mediaSessionRegistered) return
+        mediaSessionRegistered = true
+        try {
+            val session = android.media.session.MediaSession(this, "WinusIntercom")
+            session.setCallback(object : android.media.session.MediaSession.Callback() {
+                override fun onMediaButtonEvent(intent: Intent): Boolean {
+                    val event = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                        intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+                    } else {
+                        @Suppress("DEPRECATION")
+                        intent.getParcelableExtra(Intent.EXTRA_KEY_EVENT)
+                    }
+                    if (event?.action == KeyEvent.ACTION_DOWN) {
+                        when (event.keyCode) {
+                            KeyEvent.KEYCODE_HEADSETHOOK,
+                            KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE,
+                            KeyEvent.KEYCODE_MEDIA_PLAY,
+                            KeyEvent.KEYCODE_MEDIA_PAUSE -> {
+                                Log.i("IntercomAudio", "MediaSession keyCode=${event.keyCode}")
+                                dispatchHeadsetButton()
+                                return true
+                            }
+                        }
+                    }
+                    return super.onMediaButtonEvent(intent)
+                }
+            })
+            session.setPlaybackState(
+                android.media.session.PlaybackState.Builder()
+                    .setState(android.media.session.PlaybackState.STATE_PLAYING, 0, 1f)
+                    .setActions(
+                        android.media.session.PlaybackState.ACTION_PLAY_PAUSE or
+                        android.media.session.PlaybackState.ACTION_PLAY or
+                        android.media.session.PlaybackState.ACTION_PAUSE
+                    )
+                    .build()
+            )
+            session.isActive = true
+            Log.i("IntercomAudio", "MediaSession registered for headset button")
+        } catch (e: Throwable) {
+            Log.w("IntercomAudio", "MediaSession setup failed: $e")
+        }
+    }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
         if (keyCode == KeyEvent.KEYCODE_HEADSETHOOK ||
             keyCode == KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) {
-            runOnUiThread {
-                try {
-                    audioChannel?.invokeMethod("headsetButtonPressed", null)
-                    Log.i("IntercomAudio", "Headset button pressed (keyCode=$keyCode)")
-                } catch (_: Exception) {}
-            }
-            return true // consume the event
+            Log.i("IntercomAudio", "onKeyDown keyCode=$keyCode")
+            dispatchHeadsetButton()
+            return true
         }
         return super.onKeyDown(keyCode, event)
     }
@@ -842,6 +1000,9 @@ class MainActivity : FlutterActivity() {
         } catch (e: Throwable) {
             Log.w("IntercomAudio", "updatePipParams failed: $e")
         }
+        // Register MediaSession (AVRCP) + SCO monitor (HFP) for BT headset button
+        try { ensureMediaSession() } catch (_: Throwable) {}
+        try { registerScoReceiver() } catch (_: Throwable) {}
         // Lazily request BT permission and register the audio device callback
         // AFTER the activity is fully attached to its window. Doing this in
         // configureFlutterEngine (during onCreate) can crash on some OEMs.
