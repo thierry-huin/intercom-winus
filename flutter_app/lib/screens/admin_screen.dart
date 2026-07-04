@@ -51,6 +51,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   final _newIpCtrl = TextEditingController();
   bool _configLoading = false;
   bool _configSaving = false;
+  bool _userRingEnabled = false;
   // Last infra-sync error reported by the backend (empty = no error). The
   // backend persists this in `server_config.last_sync_error`; we display
   // it as a dismissable banner above the Settings tab.
@@ -143,6 +144,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         _httpsPortCtrl.text = cfg['https_port'] ?? '8443';
         _httpPortCtrl.text = cfg['http_port'] ?? '8080';
         _lastSyncError = (cfg['last_sync_error'] as String? ?? '').trim();
+        _userRingEnabled = cfg['user_ring_enabled'] == true;
       });
     } catch (e) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error loading config: $e')));
@@ -163,6 +165,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         'public_domain': _publicDomainCtrl.text.trim(),
         'https_port': _httpsPortCtrl.text.trim(),
         'http_port': _httpPortCtrl.text.trim(),
+        'user_ring_enabled': _userRingEnabled,
       });
       // Backend returns `sync: { coturn: 'queued'|'skipped', nginx: ... }`.
       // Build a human-friendly summary for the SnackBar.
@@ -2114,6 +2117,25 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
             controller: _publicDomainCtrl,
             label: 'Public domain',
             hint: 'leave empty if you only use IPs',
+          ),
+        ),
+        const SizedBox(height: 16),
+        // ---- Feature toggles ----
+        _settingsSection(
+          icon: Icons.tune,
+          title: 'Features',
+          subtitle: 'Enable or disable optional features for all users.',
+          child: SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('Allow users to ring', style: TextStyle(fontSize: 14)),
+            subtitle: Text(
+              'When enabled, regular users can ring other users. '
+              'Admins can always ring regardless.',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+            ),
+            value: _userRingEnabled,
+            onChanged: (v) => setState(() => _userRingEnabled = v),
+            activeColor: Colors.blue.shade700,
           ),
         ),
         const SizedBox(height: 8),

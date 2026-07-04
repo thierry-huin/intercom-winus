@@ -529,8 +529,16 @@ class BridgeApp:
 
         self.root = ctk.CTk()
         self.root.title("TieLine Bridge")
-        self.root.geometry("1850x650")
-        self.root.minsize(1500, 500)
+        # Adapt to screen resolution: 92% width, 72% height, clamped to sane limits.
+        self.root.update_idletasks()
+        sw = self.root.winfo_screenwidth()
+        sh = self.root.winfo_screenheight()
+        w = max(1200, min(int(sw * 0.92), 2400))
+        h = max(500, min(int(sh * 0.72), 900))
+        x = (sw - w) // 2
+        y = max(0, (sh - h) // 2 - 30)
+        self.root.geometry(f"{w}x{h}+{x}+{y}")
+        self.root.minsize(1200, 500)
         self.root.configure(fg_color=COLOR_BG)
 
         self.audio_pool: AudioDevicePool | None = None
@@ -586,7 +594,7 @@ class BridgeApp:
                      font=("SF Pro Display", 22, "bold"),
                      text_color="white").pack(side="left", padx=4, pady=8)
 
-        ctk.CTkLabel(header, text="Audio Matrix Bridge v.3.3.0",
+        ctk.CTkLabel(header, text="Audio Matrix Bridge v3.5.0",
                      font=("SF Pro Display", 13),
                      text_color=COLOR_DIM).pack(side="left", padx=8, pady=8)
 

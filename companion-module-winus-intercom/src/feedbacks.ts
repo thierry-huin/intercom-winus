@@ -1,6 +1,6 @@
 import type { CompanionFeedbackDefinitions, DropdownChoice } from '@companion-module/base'
 import { combineRgb } from '@companion-module/base'
-import type { WinusIntercomInstance } from './index'
+import type { WinusIntercomInstance } from './index.js'
 
 export function buildFeedbacks(self: WinusIntercomInstance): CompanionFeedbackDefinitions {
 	const choices: DropdownChoice[] = self.getTargetChoices()
@@ -72,6 +72,28 @@ export function buildFeedbacks(self: WinusIntercomInstance): CompanionFeedbackDe
 			callback: (feedback) => {
 				const target = String(feedback.options.target ?? '')
 				return self.isTargetOnline(target)
+			},
+		},
+		target_receiving: {
+			name: 'Target: receiving audio (someone is talking to you)',
+			type: 'boolean',
+			defaultStyle: {
+				bgcolor: combineRgb(30, 200, 80),
+				color: combineRgb(255, 255, 255),
+			},
+			options: [
+				{
+					id: 'target',
+					type: 'dropdown',
+					label: 'Target',
+					choices,
+					default: defaultId,
+					allowCustom: true,
+				},
+			],
+			callback: (feedback) => {
+				const target = String(feedback.options.target ?? '')
+				return self.isReceivingFrom(target)
 			},
 		},
 		mic_muted: {

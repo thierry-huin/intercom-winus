@@ -1,5 +1,5 @@
 import type { CompanionActionDefinitions, DropdownChoice } from '@companion-module/base'
-import type { WinusIntercomInstance } from './index'
+import type { WinusIntercomInstance } from './index.js'
 
 export function buildActions(self: WinusIntercomInstance): CompanionActionDefinitions {
 	const choices: DropdownChoice[] = self.getTargetChoices()

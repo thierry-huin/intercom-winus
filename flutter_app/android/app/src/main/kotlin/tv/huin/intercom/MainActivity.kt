@@ -263,11 +263,15 @@ class MainActivity : FlutterActivity() {
     private val FOCUS_LOSS_DEBOUNCE_MS = 3000L
 
     private fun handleFocusChange(change: Int) {
+        // During BT headset button reconnect, ignore transient focus changes.
+        // The SCO disconnect/reconnect cycle can briefly steal VOICE_COMMUNICATION
+        // focus; if we process it, we'd abandon our focus request and schedule a
+        // retry at 10 s, leaving the audio path disrupted.
+        if (scoReconnecting) {
+            Log.i("IntercomAudio", "Focus change $change suppressed (scoReconnecting)")
+            return
+        }
         when (change) {
-            // LOSS / LOSS_TRANSIENT only — these mean another app took the
-            // VOICE_COMMUNICATION focus (real call). LOSS_TRANSIENT_CAN_DUCK
-            // (notifications, navigation prompts, etc.) is intentionally
-            // ignored.
             AudioManager.AUDIOFOCUS_LOSS,
             AudioManager.AUDIOFOCUS_LOSS_TRANSIENT -> {
                 // Skip pre-GAIN spurious losses: some Android builds fire a
@@ -922,6 +926,13 @@ class MainActivity : FlutterActivity() {
                             KeyEvent.KEYCODE_MEDIA_PLAY,
                             KeyEvent.KEYCODE_MEDIA_PAUSE -> {
                                 Log.i("IntercomAudio", "MediaSession keyCode=${event.keyCode}")
+                                // Pre-emptively suppress side effects before
+                                // SCO disconnect reaches the audio focus monitor.
+                                if (activeBtDeviceId != null && !scoReconnecting) {
+                                    scoReconnecting = true
+                                    Handler(Looper.getMainLooper()).postDelayed(
+                                        { scoReconnecting = false }, 500)
+                                }
                                 dispatchHeadsetButton()
                                 return true
                             }

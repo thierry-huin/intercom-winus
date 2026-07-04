@@ -8,20 +8,16 @@ export interface WinusIntercomConfig {
 	allowSelfSignedCert: boolean
 	holdTimeoutMs: number
 	doubleTapWindowMs: number
-	ffmpegInputArgs: string
-	enableReceive: boolean
 }
 
 export const DEFAULT_CONFIG: WinusIntercomConfig = {
-	host: 'huin.tv',
+	host: '',
 	port: 8443,
 	username: '',
 	password: '',
 	allowSelfSignedCert: true,
 	holdTimeoutMs: 250,
 	doubleTapWindowMs: 500,
-	ffmpegInputArgs: '-f pulse -i default',
-	enableReceive: false,
 }
 
 export function getConfigFields(): SomeCompanionConfigField[] {
@@ -40,7 +36,6 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			label: 'Server host',
 			width: 8,
 			default: DEFAULT_CONFIG.host,
-			required: true,
 		},
 		{
 			type: 'number',
@@ -57,7 +52,6 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			label: 'Username',
 			width: 6,
 			default: DEFAULT_CONFIG.username,
-			required: true,
 		},
 		{
 			type: 'textinput',
@@ -65,7 +59,6 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			label: 'Password',
 			width: 6,
 			default: DEFAULT_CONFIG.password,
-			required: true,
 		},
 		{
 			type: 'checkbox',
@@ -73,13 +66,6 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			label: 'Accept self-signed certificate',
 			width: 6,
 			default: DEFAULT_CONFIG.allowSelfSignedCert,
-		},
-		{
-			type: 'checkbox',
-			id: 'enableReceive',
-			label: 'Also receive audio (play on PC speakers)',
-			width: 6,
-			default: DEFAULT_CONFIG.enableReceive,
 		},
 		{
 			type: 'number',
@@ -98,15 +84,6 @@ export function getConfigFields(): SomeCompanionConfigField[] {
 			default: DEFAULT_CONFIG.doubleTapWindowMs,
 			min: 150,
 			max: 1500,
-		},
-		{
-			type: 'textinput',
-			id: 'ffmpegInputArgs',
-			label: 'ffmpeg input arguments (used to capture the PC microphone)',
-			width: 12,
-			default: DEFAULT_CONFIG.ffmpegInputArgs,
-			tooltip:
-				'Linux (PulseAudio): -f pulse -i default   ·   Linux (ALSA): -f alsa -i default   ·   macOS: -f avfoundation -i ":0"   ·   Windows: -f dshow -i audio="Microphone (...)"',
 		},
 	]
 }

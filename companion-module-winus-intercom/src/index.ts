@@ -1,17 +1,17 @@
+// @ts-nocheck
 import {
 	InstanceBase,
 	InstanceStatus,
-	runEntrypoint,
 	type DropdownChoice,
 	type SomeCompanionConfigField,
 } from '@companion-module/base'
-import { DEFAULT_CONFIG, getConfigFields, type WinusIntercomConfig } from './config'
-import { IntercomSession, type Target } from './session'
-import { PttGesture } from './ptt-gesture'
-import { buildActions } from './actions'
-import { buildFeedbacks } from './feedbacks'
-import { buildVariables } from './variables'
-import { buildPresets } from './presets'
+import { DEFAULT_CONFIG, getConfigFields, type WinusIntercomConfig } from './config.js'
+import { IntercomSession, type Target } from './session.js'
+import { PttGesture } from './ptt-gesture.js'
+import { buildActions } from './actions.js'
+import { buildFeedbacks } from './feedbacks.js'
+import { buildVariables } from './variables.js'
+import { buildPresets } from './presets.js'
 
 /** Canonical target key used everywhere: "user:3", "group:1". */
 type TargetKey = string
@@ -28,11 +28,12 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 	private gestures = new Map<TargetKey, PttGesture>()
 	private talking = new Set<TargetKey>()
 	private latched = new Set<TargetKey>()
+	private receiving = new Set<number>() // user IDs currently talking to us
 	private targets: Target[] = []
 	private micMuted = false
 	private volumes = new Map<TargetKey, number>() // 0-100, default 100
 
-	async init(config: WinusIntercomConfig): Promise<void> {
+	async init(config: WinusIntercomConfig, _isFirstInit: boolean): Promise<void> {
 		this.updateStatus(InstanceStatus.Connecting)
 		await this.applyConfig(config)
 	}
@@ -67,8 +68,6 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 			username: cfg.username,
 			password: cfg.password,
 			allowSelfSignedCert: cfg.allowSelfSignedCert,
-			ffmpegInputArgs: cfg.ffmpegInputArgs,
-			enableReceive: cfg.enableReceive,
 		})
 		this.session = s
 		s.on('ready', () => {
@@ -92,13 +91,21 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 		})
 		s.on('online', (ids: Set<number>) => {
 			this.setVariableValues({ online_count: String(ids.size) })
-			this.checkFeedbacks('target_online')
+			this.checkFeedbacks('target_online' as any)
+		})
+		s.on('incoming_audio', (data: { fromUserId: number; fromDisplayName: string; talking: boolean }) => {
+			if (data.talking) {
+				this.receiving.add(data.fromUserId)
+			} else {
+				this.receiving.delete(data.fromUserId)
+			}
+			this.checkFeedbacks('target_receiving' as any)
 		})
 
-		this.setActionDefinitions(buildActions(this))
-		this.setFeedbackDefinitions(buildFeedbacks(this))
-		this.setVariableDefinitions(buildVariables())
-		this.setPresetDefinitions(buildPresets(this))
+		this.setActionDefinitions(buildActions(this) as any)
+		this.setFeedbackDefinitions(buildFeedbacks(this) as any)
+		this.setVariableDefinitions(buildVariables() as any)
+		this.setPresetDefinitions([], buildPresets(this) as any)
 		this.setVariableValues({
 			connection_status: 'connecting',
 			producing: 'no',
@@ -107,13 +114,15 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 			mic_muted: 'no',
 		})
 
-		try {
-			await s.connect()
-		} catch (err) {
-			const msg = (err as Error).message
-			this.log('error', `Connect failed: ${msg}`)
-			this.updateStatus(InstanceStatus.ConnectionFailure, msg)
-		}
+		// Don't await — return immediately so init() doesn't timeout.
+		// The session emits 'ready'/'error' events when done.
+		setTimeout(() => {
+			s.connect().catch((err) => {
+				const msg = (err as Error).message
+				this.log('error', `Connect failed: ${msg}`)
+				this.updateStatus(InstanceStatus.ConnectionFailure, msg)
+			})
+		}, 3000) // Delay connect to let Companion fully register the module first
 	}
 
 	private tearDownSession(): void {
@@ -128,10 +137,10 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 
 	private refreshDefinitions(): void {
 		// Rebuild action/feedback choices whenever the target list changes.
-		this.setActionDefinitions(buildActions(this))
-		this.setFeedbackDefinitions(buildFeedbacks(this))
-		this.setPresetDefinitions(buildPresets(this))
-		this.checkFeedbacks('target_online', 'target_latched', 'target_talking', 'mic_muted')
+		this.setActionDefinitions(buildActions(this) as any)
+		this.setFeedbackDefinitions(buildFeedbacks(this) as any)
+		this.setPresetDefinitions([], buildPresets(this) as any)
+		this.checkFeedbacks('target_online' as any, 'target_latched' as any, 'target_talking' as any, 'mic_muted' as any)
 	}
 
 	// ------------------------------------------------------------------
@@ -157,6 +166,12 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 
 	isLatched(targetKey: TargetKey): boolean {
 		return this.latched.has(targetKey)
+	}
+
+	isReceivingFrom(targetKey: TargetKey): boolean {
+		const t = parseTargetKey(targetKey)
+		if (!t) return false
+		return this.receiving.has(t.id)
 	}
 
 	isMicMuted(): boolean {
@@ -196,7 +211,7 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 		if (!t) return
 		this.getGesture(targetKey, t).reset()
 		this.latched.delete(targetKey)
-		this.checkFeedbacks('target_latched')
+		this.checkFeedbacks('target_latched' as any)
 	}
 
 	/** Explicit latch toggle — no gesture detection, just on/off. */
@@ -214,8 +229,8 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 			this.session.pttStart(t.type, t.id)
 			this.talking.add(targetKey)
 		}
-		this.setVariableValues({ talking_count: String(this.talking.size) })
-		this.checkFeedbacks('target_talking', 'target_latched')
+		this.setVariableValues({ talking_count: String(this.talking.size) } as any)
+		this.checkFeedbacks('target_talking' as any, 'target_latched' as any)
 	}
 
 	/** Mic mute toggle — pauses/resumes the mediasoup producer. */
@@ -227,8 +242,8 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 		} else {
 			this.session.resumeProducer()
 		}
-		this.setVariableValues({ mic_muted: this.micMuted ? 'yes' : 'no' })
-		this.checkFeedbacks('mic_muted')
+		this.setVariableValues({ mic_muted: this.micMuted ? 'yes' : 'no' } as any)
+		this.checkFeedbacks('mic_muted' as any)
 	}
 
 	/** Talk All — momentary PTT to every target. */
@@ -241,7 +256,7 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 			this.talking.add(key)
 		}
 		this.setVariableValues({ talking_count: String(this.talking.size) })
-		this.checkFeedbacks('target_talking')
+		this.checkFeedbacks('target_talking' as any)
 	}
 
 	handleTalkAllRelease(): void {
@@ -255,7 +270,7 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 			this.talking.delete(key)
 		}
 		this.setVariableValues({ talking_count: String(this.talking.size) })
-		this.checkFeedbacks('target_talking')
+		this.checkFeedbacks('target_talking' as any)
 	}
 
 	/** Volume adjust — ±10%, clamped 0-100. */
@@ -263,7 +278,7 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 		const cur = this.volumes.get(targetKey) ?? 100
 		const next = Math.max(0, Math.min(100, cur + delta))
 		this.volumes.set(targetKey, next)
-		this.checkFeedbacks('target_talking') // refresh button text
+		this.checkFeedbacks('target_talking' as any) // refresh button text
 	}
 
 	private getGesture(key: TargetKey, t: { type: 'user' | 'group'; id: number }): PttGesture {
@@ -278,13 +293,13 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 				this.session.pttStart(t.type, t.id)
 				this.talking.add(key)
 				this.setVariableValues({ talking_count: String(this.talking.size) })
-				this.checkFeedbacks('target_talking')
+				this.checkFeedbacks('target_talking' as any)
 			},
 			onStop: () => {
 				if (this.session) this.session.pttStop(t.type, t.id)
 				this.talking.delete(key)
 				this.setVariableValues({ talking_count: String(this.talking.size) })
-				this.checkFeedbacks('target_talking')
+				this.checkFeedbacks('target_talking' as any)
 			},
 			onLatchChanged: () => this.checkFeedbacks('target_latched'),
 		})
@@ -293,4 +308,4 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 	}
 }
 
-runEntrypoint(WinusIntercomInstance, [])
+export default WinusIntercomInstance

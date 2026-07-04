@@ -751,6 +751,10 @@ class ControlCenter:
                       fg_color=COLOR_BLUE,
                       command=self._deploy_remote_logs
                       ).pack(side="left", padx=4)
+        ctk.CTkButton(act2, text="🗑 Desinstalar paquete remoto", width=240, height=32,
+                      fg_color=COLOR_RED, hover_color="#d32f2f",
+                      command=self._deploy_uninstall_remote
+                      ).pack(side="left", padx=4)
 
         # Row 3: Proxmox deploy
         act3 = ctk.CTkFrame(parent, fg_color="transparent")
@@ -817,7 +821,10 @@ class ControlCenter:
             return ""
 
     def _use_password_auth(self) -> bool:
-        return bool(self._ssh_password()) and not self.ssh_key_var.get().strip()
+        # Use sshpass whenever a password is typed, even if a key is also
+        # configured.  sshpass only acts when ssh prompts for a password,
+        # so if the key works the password is simply ignored.
+        return bool(self._ssh_password())
 
     def _wrap_with_sshpass(self, cmd: list[str]) -> tuple[list[str], dict | None]:
         """If a password is configured (and no key), prepend `sshpass -e`
@@ -847,9 +854,9 @@ class ControlCenter:
         self.log("✓ SSH config guardada (password no se persiste)", level="ok")
 
     def _deploy_test_ssh(self):
-        # BatchMode=yes is incompatible with sshpass (it disables
-        # password auth in the client). Drop it when using password.
-        extra = [] if self._use_password_auth() else ["-o", "BatchMode=yes"]
+        # BatchMode=yes disables interactive password prompts, which
+        # breaks sshpass. Only use it when there's truly no password.
+        extra = [] if self._ssh_password().strip() else ["-o", "BatchMode=yes"]
         cmd = ["ssh", *self._ssh_args(), *extra,
                "-o", "ConnectTimeout=5", self._ssh_target(),
                "echo OK && hostname && uptime"]
@@ -925,14 +932,7 @@ class ControlCenter:
         return local_pw or None
 
     def _run_remote_sudo(self, remote_cmd: str, *, title: str) -> None:
-        """Run a remote command that needs sudo on the remote host. We
-        pipe the password through ssh's stdin into `sudo -S -p ''` so
-        no TTY is required and the secret never appears in `ps`."""
-        # Wrap the command so its sudo invocation reads the password
-        # from stdin (the empty -p suppresses sudo's own prompt).
-        wrapped = remote_cmd.replace("sudo ", "sudo -S -p '' ", 1)
-        cmd = ["ssh", *self._ssh_args(), self._ssh_target(), wrapped]
-        cmd, env = self._wrap_with_sshpass(cmd)
+        """Run a remote command that needs sudo on the remote host."""
         pw = self._remote_sudo_password()
         if pw is None:
             self.log(
@@ -942,8 +942,27 @@ class ControlCenter:
                 level="error",
             )
             return
-        # Newline-terminated so sudo reads the line straight away.
-        self.runner.run(cmd, env=env, title=title, stdin_data=pw + "\n")
+
+        if self._use_password_auth():
+            # sshpass creates a pty for SSH which intercepts stdin,
+            # so we can't pipe the sudo password through stdin_data.
+            # Embed the password pipe directly before `sudo` so the
+            # shell pipe reaches sudo's stdin (not an earlier command
+            # like `cd` before a `&&`).
+            safe_pw = pw.replace("'", "'\\''")
+            wrapped = remote_cmd.replace(
+                "sudo ",
+                f"printf '%s\\n' '{safe_pw}' | sudo -S -p '' ",
+                1,
+            )
+            cmd = ["ssh", *self._ssh_args(), self._ssh_target(), wrapped]
+            cmd, env = self._wrap_with_sshpass(cmd)
+            self.runner.run(cmd, env=env, title=title)
+        else:
+            # No sshpass — pipe sudo password directly through ssh stdin.
+            wrapped = remote_cmd.replace("sudo ", "sudo -S -p '' ", 1)
+            cmd = ["ssh", *self._ssh_args(), self._ssh_target(), wrapped]
+            self.runner.run(cmd, title=title, stdin_data=pw + "\n")
 
     def _chain_remote_install(self, fname: str):
         if self.runner.busy:
@@ -988,6 +1007,21 @@ class ControlCenter:
         self._run_remote_sudo(
             f"cd /tmp && tar xzf {fname} && cd winus-intercom-deploy-* && sudo bash deploy-proxmox.sh",
             title=f"ssh deploy-proxmox.sh",
+        )
+
+    def _deploy_uninstall_remote(self):
+        """Remove winus-intercom and/or winus-intercom-server packages on the
+        remote host so a fresh .deb can be installed without conflicts."""
+        if not messagebox.askyesno(
+            "Desinstalar remoto",
+            "¿Desinstalar winus-intercom y winus-intercom-server\n"
+            "del servidor remoto?\n\n"
+            "(Los datos en /opt/winus-intercom se conservan)"
+        ):
+            return
+        self._run_remote_sudo(
+            "sudo apt remove -y winus-intercom winus-intercom-server 2>/dev/null; true",
+            title="remote: apt remove winus-intercom*",
         )
 
     def _deploy_rebuild_backend(self):

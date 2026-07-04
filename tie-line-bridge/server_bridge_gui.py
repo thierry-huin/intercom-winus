@@ -243,7 +243,16 @@ class ServerBridgeApp(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.title("Winus Server Bridge")
-        self.geometry("1360x620")
+        # Adapt to screen resolution: 88% width, 72% height, clamped.
+        self.update_idletasks()
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        w = max(1100, min(int(sw * 0.88), 2200))
+        h = max(500, min(int(sh * 0.72), 900))
+        x = (sw - w) // 2
+        y = max(0, (sh - h) // 2 - 30)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+        self.minsize(1100, 500)
         self.configure(fg_color=COLOR_BG)
         self._running = False
         self._loop = None
@@ -266,7 +275,9 @@ class ServerBridgeApp(ctk.CTk):
                 ctk.CTkLabel(hdr, image=self._logo_img, text="").pack(side="left", padx=(10,4))
             except: pass
         ctk.CTkLabel(hdr, text="Server Bridge", font=("SF Pro Display",18,"bold"),
-                     text_color=COLOR_TEXT).pack(side="left", padx=(0,16))
+                     text_color=COLOR_TEXT).pack(side="left", padx=(0,8))
+        ctk.CTkLabel(hdr, text="v3.5.0", font=("SF Pro Display",11),
+                     text_color=COLOR_DIM).pack(side="left", padx=(0,16))
         btn_frame = ctk.CTkFrame(hdr, fg_color="transparent")
         btn_frame.pack(side="right", padx=8)
         self.refresh_btn = ctk.CTkButton(btn_frame, text="↻ Targets", width=85, height=30,

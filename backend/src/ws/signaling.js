@@ -6,7 +6,8 @@ const ms = require('../services/mediasoup-manager');
 const { getConfig, resolveAnnouncedIps } = require('../services/config-service');
 const { sendVoipPush } = require('../services/push-service');
 
-const clients = new Map(); // userId -> ws
+const clients = new Map(); // userId -> ws (primary, with mediasoup)
+const secondaryClients = new Map(); // userId -> Set<ws> (control-only, admin/superuser)
 
 // Track active PTT sessions: sourceUserId -> Map<targetKey, { targetType, targetId, targetUserIds }>
 const activePtt = new Map();
@@ -93,13 +94,19 @@ function setupSignaling(wss) {
 
     ws.on('close', async () => {
       if (userId) {
+        // Check if this is a secondary (control-only) connection
+        const secs = secondaryClients.get(userId);
+        if (secs && secs.has(ws)) {
+          secs.delete(ws);
+          if (secs.size === 0) secondaryClients.delete(userId);
+          console.log(`[Signaling] Secondary WS closed for user=${userId}`);
+          return; // Don't touch primary or mediasoup
+        }
+
         const currentWs = clients.get(userId);
         const isStale = currentWs !== ws;
         console.log(`[Signaling] WS close for user=${userId}: stale=${isStale}, hasCurrentWs=${!!currentWs}`);
 
-        // Always clean up PTT sessions, even for stale connections.
-        // A stale WS means the user reconnected, but if the old connection
-        // had active PTT that wasn't cleaned up during re-auth, we must do it now.
         const userPtt = activePtt.get(userId);
         if (userPtt && userPtt.size > 0) {
           console.log(`[Signaling] Cleaning ${userPtt.size} PTT sessions for user=${userId} (stale=${isStale})`);
@@ -107,8 +114,6 @@ function setupSignaling(wss) {
           for (const session of userPtt.values()) {
             for (const tid of session.targetUserIds) allTargetUserIds.add(tid);
           }
-          // Only call pttStop on mediasoup if this is the current (non-stale) connection.
-          // For stale connections, the new connection already has fresh transports.
           if (!isStale) {
             await ms.pttStop(userId, [...allTargetUserIds], true).catch((e) => {
               console.warn(`[Signaling] pttStop error for user=${userId}: ${e.message}`);
@@ -128,10 +133,7 @@ function setupSignaling(wss) {
 
         ms.cleanupPeer(userId);
         clients.delete(userId);
-        // Delayed broadcast so reconnecting users have time to re-auth before the
-        // "offline" broadcast reaches other clients
         setTimeout(() => broadcastOnlineUsers(), 3000);
-        // Send VoIP push to wake iOS app for reconnection
         setTimeout(() => sendVoipPush(userId), 2000);
       }
     });
@@ -158,35 +160,47 @@ async function handleMessage(ws, msg, getUserId, setUserId) {
 
       setUserId(decoded.id);
 
-      // If there's an existing WS for this user, clean up old state first.
-      // Without this, stale DTLS timeouts on old transports can disrupt
-      // the new connection by triggering transportClosed events later.
+      // Check if this user has a privileged role (admin/superuser/superadmin)
+      // that allows multiple simultaneous connections.
+      const authUser = db.prepare('SELECT role FROM users WHERE id = ?').get(decoded.id);
+      const isPrivileged = authUser && ['admin', 'superuser', 'superadmin', 'streamdeck'].includes(authUser.role);
+
       const oldWs = clients.get(decoded.id);
       if (oldWs && oldWs !== ws) {
-        console.log(`[Signaling] User ${decoded.id} reconnected, cleaning up stale state`);
-
-        // Stop active PTT sessions from this user and notify targets
-        const userPtt = activePtt.get(decoded.id);
-        if (userPtt) {
-          const allTargetUserIds = new Set();
-          for (const session of userPtt.values()) {
-            for (const tid of session.targetUserIds) allTargetUserIds.add(tid);
+        if (isPrivileged) {
+          // Privileged user: keep the primary connection (with mediasoup)
+          // and add this new WS as a secondary control-only connection.
+          if (!secondaryClients.has(decoded.id)) secondaryClients.set(decoded.id, new Set());
+          secondaryClients.get(decoded.id).add(ws);
+          console.log(`[Signaling] User ${decoded.id} added secondary connection (privileged)`);
+        } else {
+          // Regular user: replace the old connection (session lock).
+          console.log(`[Signaling] User ${decoded.id} reconnected, cleaning up stale state`);
+          const userPtt = activePtt.get(decoded.id);
+          if (userPtt) {
+            const allTargetUserIds = new Set();
+            for (const session of userPtt.values()) {
+              for (const tid of session.targetUserIds) allTargetUserIds.add(tid);
+            }
+            await ms.pttStop(decoded.id, [...allTargetUserIds], false);
+            for (const tid of allTargetUserIds) {
+              sendToUser(tid, { type: 'consumersClosed', peerId: decoded.id });
+              sendToUser(tid, { type: 'incoming_audio', fromUserId: decoded.id, talking: false });
+            }
+            activePtt.delete(decoded.id);
           }
-          await ms.pttStop(decoded.id, [...allTargetUserIds], false);
-          for (const tid of allTargetUserIds) {
-            sendToUser(tid, { type: 'consumersClosed', peerId: decoded.id });
-            sendToUser(tid, { type: 'incoming_audio', fromUserId: decoded.id, talking: false });
-          }
-          activePtt.delete(decoded.id);
+          ms.cleanupPeer(decoded.id);
+          try { oldWs.close(); } catch (_) {}
+          clients.set(decoded.id, ws);
         }
-
-        // Destroy old mediasoup state (transports, producer, consumers)
-        ms.cleanupPeer(decoded.id);
-        try { oldWs.close(); } catch (_) {}
+      } else {
+        clients.set(decoded.id, ws);
       }
-
-      clients.set(decoded.id, ws);
-      send(ws, { type: 'auth_ok', userId: decoded.id });
+      send(ws, {
+        type: 'auth_ok',
+        userId: decoded.id,
+        userRingEnabled: getConfig('user_ring_enabled', '0') === '1',
+      });
       broadcastOnlineUsers();
       // Delayed re-broadcast to ensure it arrives after any stale WS cleanup
       setTimeout(() => broadcastOnlineUsers(), 2000);
@@ -408,10 +422,11 @@ async function handleMessage(ws, msg, getUserId, setUserId) {
       break;
     }
 
-    // ---- Ring (admin/superuser pings an online user) ----
+    // ---- Ring (admin/superuser — or any user when user_ring_enabled) ----
     case 'ring_user': {
       const fromUser = db.prepare('SELECT id, role, display_name FROM users WHERE id = ?').get(userId);
-      if (!fromUser || (fromUser.role !== 'admin' && fromUser.role !== 'superuser')) {
+      const isPrivileged = fromUser && (fromUser.role === 'admin' || fromUser.role === 'superuser' || fromUser.role === 'superadmin');
+      if (!fromUser || (!isPrivileged && getConfig('user_ring_enabled', '0') !== '1')) {
         send(ws, { type: 'ring_denied', reason: 'forbidden', requestId: msg.requestId });
         break;
       }
@@ -594,15 +609,22 @@ function send(ws, data) {
 function sendToUser(userId, data) {
   const ws = clients.get(userId);
   if (ws) send(ws, data);
+  // Also send to secondary (control-only) connections
+  const secs = secondaryClients.get(userId);
+  if (secs) for (const s of secs) send(s, data);
 }
 
 function broadcastOnlineUsers() {
-  // Include all WS-connected users as online.
-  // Bridges (PlainTransport) may not pass isPeerReady but are still functional.
   const onlineUserIds = Array.from(clients.keys());
   const msg = JSON.stringify({ type: 'online_users', userIds: onlineUserIds });
   for (const ws of clients.values()) {
     if (ws.readyState === 1) ws.send(msg);
+  }
+  // Also broadcast to secondary connections
+  for (const secs of secondaryClients.values()) {
+    for (const ws of secs) {
+      if (ws.readyState === 1) ws.send(msg);
+    }
   }
 }
 
@@ -612,12 +634,17 @@ function broadcastOnlineUsers() {
 function disconnectUser(userId) {
   const ws = clients.get(userId);
   if (!ws) return false;
-  // Block re-auth for 30 seconds
   kickedUsers.set(userId, Date.now() + 30000);
-  // Tell client they were kicked
   try { send(ws, { type: 'kicked', reason: 'Disconnected by admin' }); } catch (_) {}
-  // Close after brief delay so the message arrives first
   setTimeout(() => { try { ws.close(); } catch (_) {} }, 200);
+  // Also disconnect secondary connections
+  const secs = secondaryClients.get(userId);
+  if (secs) {
+    for (const s of secs) {
+      try { send(s, { type: 'kicked', reason: 'Disconnected by admin' }); } catch (_) {}
+      setTimeout(() => { try { s.close(); } catch (_) {} }, 200);
+    }
+  }
   return true;
 }
 

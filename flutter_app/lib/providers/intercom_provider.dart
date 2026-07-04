@@ -70,6 +70,10 @@ class IntercomProvider extends ChangeNotifier {
   // Per-group volume (0.0 to 1.0, default 1.0)
   final Map<int, double> _groupVolumes = {};
 
+  // Server-wide setting: allow regular users to ring other users.
+  // Set by admin in Settings, sent via auth_ok.
+  bool _userRingEnabled = false;
+
   // Incoming ring (admin/superuser wants our attention)
   Map<String, dynamic>? _incomingRing;
   Timer? _ringAutoStopTimer;
@@ -163,6 +167,7 @@ class IntercomProvider extends ChangeNotifier {
   double get sidetoneLevel => _sidetoneLevel;
   int get callDuckDb => _callDuckDb;
   bool get callInterruption => _callInterruption;
+  bool get userRingEnabled => _userRingEnabled;
 
   /// Call when entering/leaving PiP to throttle UI updates
   void setPipMode(bool pip) {
@@ -243,6 +248,7 @@ class IntercomProvider extends ChangeNotifier {
 
   void _onAuthOk(Map<String, dynamic> msg) async {
     _connected = true;
+    _userRingEnabled = msg['userRingEnabled'] == true;
     final version = ++_initVersion; // Cancel any ongoing transportClosed reinit
     _mediaReady = false;
     notifyListeners();

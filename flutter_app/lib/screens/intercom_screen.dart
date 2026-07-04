@@ -115,7 +115,7 @@ class _IntercomScreenState extends State<IntercomScreen> {
     // interactive (bell + RING + tap) only on admin / superuser sessions;
     // regular users see the same passive strip purely as the RX indicator.
     final showTopStrip = type == 'user' && !isBridge;
-    final topStripInteractive = isAdmin && showTopStrip;
+    final topStripInteractive = (isAdmin || ic.userRingEnabled) && showTopStrip;
     // Bright-green top strip when *this* user is currently talking to us.
     // Multiple users can transmit simultaneously, so we light up every
     // matching button (replaces the old single "Receiving audio from X"

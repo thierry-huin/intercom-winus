@@ -659,6 +659,7 @@ router.get('/server-config', (req, res) => {
     public_domain:  getConfig('public_domain', process.env.PUBLIC_DOMAIN || ''),
     https_port:     getConfig('https_port', process.env.HTTPS_PORT || '8443'),
     http_port:      getConfig('http_port', process.env.HTTP_PORT || '8080'),
+    user_ring_enabled: getConfig('user_ring_enabled', '0') === '1',
     // Surface the last infra-sync failure (if any) so the UI can
     // show a banner. Cleared on the next successful sync.
     last_sync_error: getConfig('last_sync_error', ''),
@@ -679,6 +680,12 @@ router.get('/server-config', (req, res) => {
 // The sync runs in the background — the response returns as soon as the
 // BD write is durable, with a `sync` field describing what was queued.
 router.put('/server-config', (req, res) => {
+  // user_ring_enabled is a simple boolean toggle — handle separately
+  // before the infra-sync logic.
+  if (req.body.user_ring_enabled !== undefined) {
+    setConfig('user_ring_enabled', req.body.user_ring_enabled ? '1' : '0');
+  }
+
   const fields = [
     'announced_ips',
     'turn_host',
