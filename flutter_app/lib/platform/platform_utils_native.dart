@@ -153,7 +153,7 @@ void platformReleaseWakeLock() {
 
 void platformVibrate() async {
   try {
-    final hasVibrator = await Vibration.hasVibrator() ?? false;
+    final hasVibrator = await Vibration.hasVibrator();
     if (hasVibrator) {
       Vibration.vibrate(pattern: [0, 200, 100, 200]);
     }
@@ -333,7 +333,7 @@ class _IntercomTaskHandler extends TaskHandler {
   @override
   void onRepeatEvent(DateTime timestamp) {}
   @override
-  Future<void> onDestroy(DateTime timestamp, bool isAppTerminated) async {}
+  Future<void> onDestroy(DateTime timestamp, bool isTimeout) async {}
 }
 
 /// Save a text file to the device's Downloads folder.

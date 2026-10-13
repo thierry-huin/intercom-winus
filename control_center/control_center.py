@@ -506,8 +506,9 @@ class ControlCenter:
                       ).pack(side="left", padx=4)
         ctk.CTkButton(btns, text="🔨 Rebuild backend", width=170, height=34,
                       fg_color=COLOR_ACCENT, hover_color="#6a25d0",
-                      command=lambda: dc("up", "-d", "--build", "backend",
-                                          title="rebuild backend")
+                      command=lambda: self.runner.run(
+                          ["bash", str(PROJECT_DIR / "build-server.sh")],
+                          cwd=str(PROJECT_DIR), title="build-server.sh (no-cache multi-company)")
                       ).pack(side="left", padx=4)
         ctk.CTkButton(btns, text="⟳ Recreate nginx", width=160, height=34,
                       fg_color=COLOR_ORANGE, hover_color="#ff8f00",
@@ -719,52 +720,28 @@ class ControlCenter:
                       fg_color=COLOR_DIM,
                       command=self._save_deploy_cfg).grid(row=0, column=6, padx=(12, 0))
 
-        # Actions — Row 1: SSH + .deb deploy
+        # Actions — single column layout
         ctk.CTkLabel(parent, text="Acciones",
                      font=("SF Pro Display", 12),
                      text_color=COLOR_DIM).pack(anchor="w", padx=14, pady=(16, 2))
 
-        act1 = ctk.CTkFrame(parent, fg_color="transparent")
-        act1.pack(fill="x", padx=14, pady=2)
-        ctk.CTkButton(act1, text="🧪 Probar SSH", width=150, height=32,
-                      fg_color=COLOR_DIM,
-                      command=self._deploy_test_ssh
-                      ).pack(side="left", padx=4)
-        ctk.CTkButton(act1, text="⬆ Subir + instalar slim .deb", width=240, height=32,
-                      fg_color=COLOR_GREEN, text_color="#1a1a2e",
-                      command=self._deploy_upload_slim
-                      ).pack(side="left", padx=4)
-        ctk.CTkButton(act1, text="⬆ Subir + instalar full .deb (APK)", width=260, height=32,
-                      fg_color=COLOR_ACCENT2, hover_color="#00a0b0",
-                      text_color="#1a1a2e",
-                      command=self._deploy_upload_full
-                      ).pack(side="left", padx=4)
+        actions = ctk.CTkFrame(parent, fg_color="transparent")
+        actions.pack(fill="x", padx=14, pady=2)
 
-        # Row 2: Remote management
-        act2 = ctk.CTkFrame(parent, fg_color="transparent")
-        act2.pack(fill="x", padx=14, pady=2)
-        ctk.CTkButton(act2, text="🔨 Rebuild backend remoto", width=220, height=32,
-                      fg_color=COLOR_ACCENT, hover_color="#6a25d0",
-                      command=self._deploy_rebuild_backend
-                      ).pack(side="left", padx=4)
-        ctk.CTkButton(act2, text="📝 Logs remotos", width=150, height=32,
-                      fg_color=COLOR_BLUE,
-                      command=self._deploy_remote_logs
-                      ).pack(side="left", padx=4)
-        ctk.CTkButton(act2, text="🗑 Desinstalar paquete remoto", width=240, height=32,
-                      fg_color=COLOR_RED, hover_color="#d32f2f",
-                      command=self._deploy_uninstall_remote
-                      ).pack(side="left", padx=4)
-
-        # Row 3: Proxmox deploy
-        act3 = ctk.CTkFrame(parent, fg_color="transparent")
-        act3.pack(fill="x", padx=14, pady=2)
-        ctk.CTkButton(act3, text="📦 Subir + deploy Proxmox tar.gz",
-                      width=280, height=32,
-                      font=("SF Pro Display", 12, "bold"),
-                      fg_color=COLOR_ACCENT, hover_color="#6a25d0",
-                      command=self._deploy_upload_proxmox
-                      ).pack(side="left", padx=4)
+        btn_specs = [
+            ("🧪 Probar SSH", COLOR_DIM, None, self._deploy_test_ssh),
+            ("⬆ Subir + instalar slim .deb", COLOR_GREEN, "#1a1a2e", self._deploy_upload_slim),
+            ("⬆ Subir + instalar full .deb (APK)", COLOR_ACCENT2, "#1a1a2e", self._deploy_upload_full),
+            ("🔨 Rebuild backend remoto", COLOR_ACCENT, None, self._deploy_rebuild_backend),
+            ("📝 Logs remotos", COLOR_BLUE, None, self._deploy_remote_logs),
+            ("🗑 Desinstalar paquete remoto", COLOR_RED, None, self._deploy_uninstall_remote),
+            ("📦 Subir + deploy Proxmox tar.gz", COLOR_ACCENT, None, self._deploy_upload_proxmox),
+        ]
+        for label, color, text_color, cmd in btn_specs:
+            ctk.CTkButton(actions, text=label, width=340, height=32,
+                          fg_color=color, text_color=text_color or COLOR_TEXT,
+                          anchor="w", command=cmd
+                          ).pack(fill="x", padx=4, pady=2)
 
     def _ssh_port(self) -> str:
         """Return the configured SSH port, or empty string if it's the
@@ -932,7 +909,12 @@ class ControlCenter:
         return local_pw or None
 
     def _run_remote_sudo(self, remote_cmd: str, *, title: str) -> None:
-        """Run a remote command that needs sudo on the remote host."""
+        """Run a remote command that needs sudo on the remote host.
+
+        Commands often chain several `sudo ... && sudo ...`. Only wiring the
+        first one leaves later steps asking for a TTY password and the whole
+        step fails with rc=1 even after docker recreate already succeeded.
+        """
         pw = self._remote_sudo_password()
         if pw is None:
             self.log(
@@ -946,23 +928,28 @@ class ControlCenter:
         if self._use_password_auth():
             # sshpass creates a pty for SSH which intercepts stdin,
             # so we can't pipe the sudo password through stdin_data.
-            # Embed the password pipe directly before `sudo` so the
-            # shell pipe reaches sudo's stdin (not an earlier command
-            # like `cd` before a `&&`).
+            # Embed the password pipe before EVERY `sudo` so chained
+            # commands (compose && exec && logs) all authenticate.
             safe_pw = pw.replace("'", "'\\''")
-            wrapped = remote_cmd.replace(
+            # Cache credentials once, then non-interactive sudo for the rest.
+            # Fallback path still rewrites every sudo in case timestamp_timeout=0.
+            body = remote_cmd.replace(
                 "sudo ",
                 f"printf '%s\\n' '{safe_pw}' | sudo -S -p '' ",
-                1,
+            )
+            wrapped = (
+                f"printf '%s\\n' '{safe_pw}' | sudo -S -p '' -v 2>/dev/null; "
+                + body
             )
             cmd = ["ssh", *self._ssh_args(), self._ssh_target(), wrapped]
             cmd, env = self._wrap_with_sshpass(cmd)
             self.runner.run(cmd, env=env, title=title)
         else:
-            # No sshpass — pipe sudo password directly through ssh stdin.
-            wrapped = remote_cmd.replace("sudo ", "sudo -S -p '' ", 1)
+            # No sshpass — feed one password line per sudo -S via stdin.
+            n = max(1, remote_cmd.count("sudo "))
+            wrapped = remote_cmd.replace("sudo ", "sudo -S -p '' ")
             cmd = ["ssh", *self._ssh_args(), self._ssh_target(), wrapped]
-            self.runner.run(cmd, title=title, stdin_data=pw + "\n")
+            self.runner.run(cmd, title=title, stdin_data=(pw + "\n") * n)
 
     def _chain_remote_install(self, fname: str):
         if self.runner.busy:
@@ -1003,10 +990,18 @@ class ControlCenter:
         if self.runner.busy:
             self.root.after(500, lambda: self._chain_proxmox_deploy(fname))
             return
-        # Extract + run deploy script on remote
+        # Extract into a unique dir. Never `cd winus-intercom-deploy-*` — if
+        # previous deploys left several folders in /tmp the shell glob expands
+        # to multiple args and bash errors with "cd: demasiados argumentos".
+        stamp = fname.replace(".tar.gz", "").replace("winus-intercom-server-", "")
+        extract_dir = f"/tmp/winus-proxmox-deploy-{stamp}"
         self._run_remote_sudo(
-            f"cd /tmp && tar xzf {fname} && cd winus-intercom-deploy-* && sudo bash deploy-proxmox.sh",
-            title=f"ssh deploy-proxmox.sh",
+            f"rm -rf {extract_dir} && mkdir -p {extract_dir} && "
+            f"tar xzf /tmp/{fname} -C {extract_dir} && "
+            f"DIR=$(find {extract_dir} -maxdepth 1 -type d -name 'winus-intercom-deploy-*' | head -1) && "
+            f"if [ -z \"$DIR\" ]; then echo 'extract failed: no deploy dir' >&2; exit 1; fi && "
+            f"cd \"$DIR\" && sudo bash deploy-proxmox.sh",
+            title="ssh deploy-proxmox.sh",
         )
 
     def _deploy_uninstall_remote(self):
@@ -1025,9 +1020,14 @@ class ControlCenter:
         )
 
     def _deploy_rebuild_backend(self):
+        # Proxmox targets use pre-loaded images (no build context). Force
+        # recreate so a freshly loaded :latest is actually picked up.
         self._run_remote_sudo(
-            "cd /opt/winus-intercom && sudo docker compose up -d --build backend",
-            title="remote: rebuild backend",
+            "cd /opt/winus-intercom && "
+            "sudo docker compose up -d --force-recreate --remove-orphans backend nginx && "
+            "sudo docker exec intercom-backend ls /app/src/services/company-scope.js && "
+            "sudo docker logs intercom-backend --tail 30",
+            title="remote: recreate backend+nginx from loaded images",
         )
 
     def _deploy_remote_logs(self):

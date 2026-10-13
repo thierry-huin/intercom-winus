@@ -1,63 +1,103 @@
 #!/bin/bash
 # ============================================================
-# Server Bridge — macOS Installer
+# Server Bridge — macOS Installer (Apple Silicon + Intel)
 # Double-click to install. Connects two Winus Intercom servers.
 # ============================================================
 
-trap 'echo ""; echo "❌ Error. Check messages above."; read -p "Press Enter to close..."; exit 1' ERR
+set +e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 APP_NAME="Server Bridge"
 VENV_DIR="$SCRIPT_DIR/.venv-server-bridge"
+ARCH="$(uname -m 2>/dev/null || echo unknown)"
 
-clear
+PATH=$(echo "$PATH" | tr ':' '\n' | grep -v '^/opt/local' | paste -sd ':' -)
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:}$PATH"
+if [ -x /opt/homebrew/bin/brew ]; then
+    eval "$(/opt/homebrew/bin/brew shellenv)"
+elif [ -x /usr/local/bin/brew ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+fi
+
+safe_clear() {
+    if [ -x /usr/bin/clear ]; then
+        /usr/bin/clear 2>/dev/null || true
+    fi
+}
+
+die() {
+    echo ""
+    echo "❌ $*"
+    echo ""
+    read -r -p "Press Enter to close..." _
+    exit 1
+}
+
+safe_clear
 echo "╔══════════════════════════════════════════╗"
 echo "║   Server Bridge — macOS Installer        ║"
+echo "║   Arch: ${ARCH}                          ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
 
-# ---- 1. Homebrew ----
 echo "▸ [1/5] Checking Homebrew..."
-if ! command -v brew &>/dev/null; then
+if ! command -v brew >/dev/null 2>&1; then
     echo "  Installing Homebrew..."
-    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+    /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" \
+        || die "Homebrew install failed"
 fi
-if [ -f /opt/homebrew/bin/brew ]; then
+if [ -x /opt/homebrew/bin/brew ]; then
     eval "$(/opt/homebrew/bin/brew shellenv)"
+elif [ -x /usr/local/bin/brew ]; then
+    eval "$(/usr/local/bin/brew shellenv)"
+fi
+command -v brew >/dev/null 2>&1 || die "brew not found in PATH"
+if [ "$ARCH" = "arm64" ] && [ ! -x /opt/homebrew/bin/brew ]; then
+    die "Apple Silicon requires Homebrew at /opt/homebrew"
 fi
 echo "  ✓ Homebrew OK"
 
-# ---- 2. Python ----
 echo "▸ [2/5] Checking Python..."
-for pkg in python@3.12; do
-    if ! brew list "$pkg" &>/dev/null; then
-        echo "  Installing $pkg..."
-        brew install "$pkg" 2>/dev/null
-    fi
-done
+if ! brew list python@3.12 >/dev/null 2>&1; then
+    echo "  Installing python@3.12..."
+    brew install python@3.12 || die "brew install python@3.12 failed"
+fi
 
 PY=""
-for p in /opt/homebrew/bin/python3.12 /usr/local/bin/python3.12 python3; do
-    if command -v "$p" &>/dev/null; then PY="$p"; break; fi
+for p in \
+    /opt/homebrew/opt/python@3.12/bin/python3.12 \
+    /opt/homebrew/bin/python3.12 \
+    /usr/local/opt/python@3.12/bin/python3.12 \
+    /usr/local/bin/python3.12
+do
+    [ -x "$p" ] || continue
+    if [ "$ARCH" = "arm64" ]; then
+        file "$p" 2>/dev/null | grep -qi 'x86_64' && ! file "$p" 2>/dev/null | grep -qi 'arm64' && continue
+    fi
+    PY="$p"
+    break
 done
-if [ -z "$PY" ]; then
-    echo "❌ Python 3 not found."
-    read -p "Press Enter to close..."
-    exit 1
-fi
-echo "  ✓ $($PY --version)"
+[ -n "$PY" ] || die "Python 3.12 not found"
+echo "  ✓ $($PY --version) ($PY)"
 
-# ---- 3. Virtual environment ----
 echo "▸ [3/5] Setting up Python environment..."
-if [ ! -d "$VENV_DIR" ]; then
-    "$PY" -m venv "$VENV_DIR"
+if [ -d "$VENV_DIR" ] && [ "$ARCH" = "arm64" ] && [ -x "$VENV_DIR/bin/python3" ]; then
+    if file "$VENV_DIR/bin/python3" 2>/dev/null | grep -qi 'x86_64' \
+        && ! file "$VENV_DIR/bin/python3" 2>/dev/null | grep -qi 'arm64'; then
+        echo "  Recreating Intel venv on Apple Silicon..."
+        rm -rf "$VENV_DIR"
+    fi
 fi
-source "$VENV_DIR/bin/activate"
-pip install --quiet --upgrade pip 2>/dev/null
-pip install --quiet websockets aiohttp customtkinter Pillow 2>/dev/null
+if [ ! -d "$VENV_DIR" ]; then
+    "$PY" -m venv "$VENV_DIR" || die "venv create failed"
+fi
+# shellcheck disable=SC1091
+source "$VENV_DIR/bin/activate" || die "venv activate failed"
+python3 -m pip install --upgrade pip >/dev/null 2>&1 || true
+python3 -m pip install --upgrade websockets aiohttp customtkinter Pillow \
+    || die "pip install failed"
 echo "  ✓ Dependencies installed (CLI + GUI)"
 
-# ---- 4. Create config template ----
 echo "▸ [4/5] Checking configuration..."
 CONFIG="$SCRIPT_DIR/server_bridge.json"
 if [ ! -f "$CONFIG" ]; then
@@ -85,7 +125,6 @@ else
     echo "  ✓ server_bridge.json exists"
 fi
 
-# ---- 5. Create .app + .command ----
 echo "▸ [5/5] Creating application..."
 APP_DIR="$HOME/Desktop/$APP_NAME.app"
 APP_CONTENTS="$APP_DIR/Contents"
@@ -95,12 +134,17 @@ mkdir -p "$APP_MACOS" "$APP_RESOURCES"
 
 cat > "$APP_RESOURCES/run.command" << RUN_EOF
 #!/bin/bash
-if [ -f /opt/homebrew/bin/brew ]; then
+PATH=\$(echo "\$PATH" | tr ':' '\\n' | grep -v '^/opt/local' | paste -sd ':' -)
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:\${PATH}"
+if [ -x /opt/homebrew/bin/brew ]; then
     eval "\$(/opt/homebrew/bin/brew shellenv)"
+elif [ -x /usr/local/bin/brew ]; then
+    eval "\$(/usr/local/bin/brew shellenv)"
 fi
-cd "$SCRIPT_DIR"
-source "$VENV_DIR/bin/activate"
-python3 "$SCRIPT_DIR/server_bridge_gui.py"
+cd "$SCRIPT_DIR" || exit 1
+# shellcheck disable=SC1091
+source "$VENV_DIR/bin/activate" || exit 1
+exec python3 "$SCRIPT_DIR/server_bridge_gui.py"
 RUN_EOF
 chmod +x "$APP_RESOURCES/run.command"
 
@@ -121,7 +165,7 @@ cat > "$APP_CONTENTS/Info.plist" << PLIST_EOF
     <key>CFBundleIdentifier</key>
     <string>com.intercom.server-bridge</string>
     <key>CFBundleVersion</key>
-    <string>1.0.0</string>
+    <string>1.0.1</string>
     <key>CFBundleExecutable</key>
     <string>launch</string>
     <key>CFBundleIconFile</key>
@@ -132,28 +176,34 @@ cat > "$APP_CONTENTS/Info.plist" << PLIST_EOF
 </plist>
 PLIST_EOF
 
-# Icon from logo.png
-LOGO="$SCRIPT_DIR/logo.png"
-if [ -f "$LOGO" ]; then
+LOGO=""
+for cand in "$SCRIPT_DIR/logo.png" "$SCRIPT_DIR/Logo.png"; do
+    [ -f "$cand" ] && LOGO="$cand" && break
+done
+if [ -n "$LOGO" ]; then
     ICONSET="$APP_RESOURCES/AppIcon.iconset"
     mkdir -p "$ICONSET"
     for s in 16 32 64 128 256 512 1024; do
-        sips -z $s $s "$LOGO" --out "$ICONSET/icon_${s}x${s}.png" > /dev/null 2>&1
+        sips -z "$s" "$s" "$LOGO" --out "$ICONSET/icon_${s}x${s}.png" >/dev/null 2>&1
     done
-    iconutil -c icns "$ICONSET" -o "$APP_RESOURCES/AppIcon.icns" 2>/dev/null
+    iconutil -c icns "$ICONSET" -o "$APP_RESOURCES/AppIcon.icns" 2>/dev/null || true
     rm -rf "$ICONSET"
 fi
 
-# CLI .command launcher (headless, for running as background process)
 LAUNCHER="$HOME/Desktop/$APP_NAME CLI.command"
 cat > "$LAUNCHER" << LAUNCHER_EOF
 #!/bin/bash
-if [ -f /opt/homebrew/bin/brew ]; then
+PATH=\$(echo "\$PATH" | tr ':' '\\n' | grep -v '^/opt/local' | paste -sd ':' -)
+export PATH="/usr/bin:/bin:/usr/sbin:/sbin:\${PATH}"
+if [ -x /opt/homebrew/bin/brew ]; then
     eval "\$(/opt/homebrew/bin/brew shellenv)"
+elif [ -x /usr/local/bin/brew ]; then
+    eval "\$(/usr/local/bin/brew shellenv)"
 fi
+# shellcheck disable=SC1091
 source "$VENV_DIR/bin/activate"
-cd "$SCRIPT_DIR"
-python3 server_bridge.py
+cd "$SCRIPT_DIR" || exit 1
+exec python3 server_bridge.py
 LAUNCHER_EOF
 chmod +x "$LAUNCHER"
 
@@ -171,4 +221,4 @@ echo "║   2. Then double-click to run            ║"
 echo "║                                          ║"
 echo "╚══════════════════════════════════════════╝"
 echo ""
-read -p "Press Enter to close..."
+read -r -p "Press Enter to close..." _

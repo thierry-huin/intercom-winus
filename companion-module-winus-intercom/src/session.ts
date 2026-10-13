@@ -70,6 +70,10 @@ export class IntercomSession extends EventEmitter {
 		this.send({ type: 'ptt_stop', targetType: type, targetId: id })
 	}
 
+	ringUser(targetUserId: number): void {
+		this.send({ type: 'ring_user', targetUserId })
+	}
+
 	async pauseProducer(): Promise<void> {}
 	async resumeProducer(): Promise<void> {}
 

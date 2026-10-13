@@ -80,12 +80,12 @@ export function buildActions(self: WinusIntercomInstance): CompanionActionDefini
 				self.handlePttLatchToggle(target)
 			},
 		},
-		mic_mute_toggle: {
-			name: 'Mic: mute/unmute toggle',
-			description: 'Pauses or resumes the audio producer. While muted, no audio is sent to any target.',
+		mute_all_toggle: {
+			name: 'Mute All: pause/resume all active PTTs',
+			description: 'First press stops all active PTTs. Second press restores them. Latch state is preserved.',
 			options: [],
 			callback: async () => {
-				self.handleMicMuteToggle()
+				self.handleMuteAllToggle()
 			},
 		},
 		talk_all_press: {
@@ -104,40 +104,22 @@ export function buildActions(self: WinusIntercomInstance): CompanionActionDefini
 				self.handleTalkAllRelease()
 			},
 		},
-		volume_up: {
-			name: 'Volume: +10%',
-			description: 'Increase target volume by 10% (visual, stored in module).',
+		ring_user: {
+			name: 'Ring: send alert to a user',
+			description: 'Ring a user to get their attention. Triggers a ringtone + vibration on their device.',
 			options: [
 				{
 					id: 'target',
 					type: 'dropdown',
-					label: 'Target',
-					choices,
+					label: 'Target (user only)',
+					choices: choices.filter(c => String(c.id).startsWith('user:')),
 					default: defaultId,
 					allowCustom: true,
 				},
 			],
 			callback: async (event) => {
 				const target = String(event.options.target ?? '')
-				self.adjustVolume(target, 10)
-			},
-		},
-		volume_down: {
-			name: 'Volume: -10%',
-			description: 'Decrease target volume by 10% (visual, stored in module).',
-			options: [
-				{
-					id: 'target',
-					type: 'dropdown',
-					label: 'Target',
-					choices,
-					default: defaultId,
-					allowCustom: true,
-				},
-			],
-			callback: async (event) => {
-				const target = String(event.options.target ?? '')
-				self.adjustVolume(target, -10)
+				self.handleRingUser(target)
 			},
 		},
 	}

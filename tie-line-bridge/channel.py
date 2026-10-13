@@ -75,6 +75,8 @@ class TieLineChannel:
         vox_recv_threshold_db: float = -40.0,
         vox_recv_hold_ms: int = 300,
         bridge_ip: str = "",
+        company_id=None,
+        company: str = "",
     ):
         self.index = index
         self.server_url = server_url.rstrip('/')
@@ -83,6 +85,12 @@ class TieLineChannel:
         self.target_type = target_type
         self.target_id = target_id
         self.bridge_ip = bridge_ip  # Optional: explicit IP for recv (e.g. Zerotier/Wireguard IP)
+        # Multi-tenant: same username may exist in several companies.
+        try:
+            self.company_id = int(company_id) if company_id not in (None, "", 0, "0") else None
+        except (TypeError, ValueError):
+            self.company_id = None
+        self.company = (company or "").strip()  # slug or name fallback
         self.audio_pool = audio_pool
         self.input_device = input_device
         self.input_channel = input_channel
@@ -198,17 +206,42 @@ class TieLineChannel:
         # 1. HTTP Login
         api_url = self.server_url
         async with aiohttp.ClientSession(connector=aiohttp.TCPConnector(ssl=False)) as session:
+            login_body = {
+                "username": self.username,
+                "password": self.password,
+                "client_type": "bridge",
+            }
+            if self.company_id is not None:
+                login_body["company_id"] = self.company_id
+            elif self.company:
+                login_body["company"] = self.company
             async with session.post(
                 f"{api_url}/api/auth/login",
-                json={"username": self.username, "password": self.password, "client_type": "bridge"},
+                json=login_body,
             ) as resp:
                 data = await resp.json()
+                if resp.status == 409 and data.get("code") == "COMPANY_REQUIRED":
+                    cos = data.get("companies") or []
+                    names = ", ".join(
+                        str(c.get("company_name") or c.get("company_id")) for c in cos
+                    )
+                    self._error = f"company required ({names}). Set company_id on this channel."
+                    print(f"[{tag}] Login failed: {self._error}")
+                    return
                 if resp.status != 200:
                     self._error = data.get('error', f'HTTP {resp.status}')
                     print(f"[{tag}] Login failed: {self._error}")
                     return
                 self._token = data['token']
-        print(f"[{tag}] Logged in as {self.username}")
+                # Remember resolved company from server when not set locally.
+                u = data.get("user") or {}
+                if self.company_id is None and u.get("company_id") is not None:
+                    try:
+                        self.company_id = int(u["company_id"])
+                    except (TypeError, ValueError):
+                        pass
+        co_lbl = f" company={self.company_id}" if self.company_id is not None else ""
+        print(f"[{tag}] Logged in as {self.username}{co_lbl}")
 
         # 2. WebSocket connect
         ws_url = self.server_url.replace('https://', 'wss://').replace('http://', 'ws://') + '/ws'

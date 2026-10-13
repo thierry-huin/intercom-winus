@@ -63,6 +63,8 @@ class BridgeEndpoint:
         target_type: str,
         target_id: int,
         bridge_ip: str = "",
+        company_id=None,
+        company: str = "",
     ):
         self.label = label
         self.server_url = server_url.rstrip("/")
@@ -71,6 +73,11 @@ class BridgeEndpoint:
         self.target_type = target_type
         self.target_id = target_id
         self.bridge_ip = bridge_ip
+        try:
+            self.company_id = int(company_id) if company_id not in (None, "", 0, "0") else None
+        except (TypeError, ValueError):
+            self.company_id = None
+        self.company = (company or "").strip()
 
         self.connected = False
         self.error = None
@@ -98,21 +105,39 @@ class BridgeEndpoint:
         async with aiohttp.ClientSession(
             connector=aiohttp.TCPConnector(ssl=False)
         ) as session:
+            login_body = {
+                "username": self.username,
+                "password": self.password,
+                "client_type": "bridge",
+            }
+            if self.company_id is not None:
+                login_body["company_id"] = self.company_id
+            elif self.company:
+                login_body["company"] = self.company
             async with session.post(
                 f"{self.server_url}/api/auth/login",
-                json={
-                    "username": self.username,
-                    "password": self.password,
-                    "client_type": "bridge",
-                },
+                json=login_body,
             ) as resp:
                 data = await resp.json()
+                if resp.status == 409 and data.get("code") == "COMPANY_REQUIRED":
+                    cos = data.get("companies") or []
+                    names = ", ".join(str(c.get("company_name") or c.get("company_id")) for c in cos)
+                    self.error = f"company required ({names})"
+                    print(f"[{tag}] Login failed: {self.error}")
+                    return False
                 if resp.status != 200:
                     self.error = data.get("error", f"HTTP {resp.status}")
                     print(f"[{tag}] Login failed: {self.error}")
                     return False
                 self._token = data["token"]
-        print(f"[{tag}] Logged in as {self.username}")
+                u = data.get("user") or {}
+                if self.company_id is None and u.get("company_id") is not None:
+                    try:
+                        self.company_id = int(u["company_id"])
+                    except (TypeError, ValueError):
+                        pass
+        co_lbl = f" company={self.company_id}" if self.company_id is not None else ""
+        print(f"[{tag}] Logged in as {self.username}{co_lbl}")
 
         # 2. WebSocket
         ws_url = (
@@ -596,6 +621,8 @@ async def run_server_bridge(config: dict):
             target_type=lk.get("a_target_type", "user"),
             target_id=lk.get("a_target_id", 0),
             bridge_ip=config.get("bridge_ip", ""),
+            company_id=lk.get("a_company_id") or config.get("company_a_id") or config.get("company_id"),
+            company=lk.get("a_company") or config.get("company_a") or "",
         )
         ep_b = BridgeEndpoint(
             label=f"{label}/B",
@@ -605,6 +632,8 @@ async def run_server_bridge(config: dict):
             target_type=lk.get("b_target_type", "user"),
             target_id=lk.get("b_target_id", 0),
             bridge_ip=config.get("bridge_ip", ""),
+            company_id=lk.get("b_company_id") or config.get("company_b_id") or config.get("company_id"),
+            company=lk.get("b_company") or config.get("company_b") or "",
         )
         links.append(ServerBridgeLink(label=label, endpoint_a=ep_a, endpoint_b=ep_b))
 
@@ -657,10 +686,12 @@ def main():
                         "label": "Studio A ↔ Studio B",
                         "a_username": "bridge_b_1",
                         "a_password": "changeme",
+                        "a_company_id": 1,
                         "a_target_type": "user",
                         "a_target_id": 5,
                         "b_username": "bridge_a_1",
                         "b_password": "changeme",
+                        "b_company_id": 1,
                         "b_target_type": "user",
                         "b_target_id": 3,
                     }

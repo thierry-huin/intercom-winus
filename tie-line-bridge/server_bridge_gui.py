@@ -93,6 +93,11 @@ class LinkRow:
                                     placeholder_text="pass", show="•", height=28)
         self.a_pass.grid(row=0, column=col, padx=2, pady=3); col += 1
 
+        self.a_company_var = tk.StringVar()
+        self.a_company = ctk.CTkEntry(self.frame, textvariable=self.a_company_var, width=50,
+                                       placeholder_text="co#", height=28, font=("SF Pro Display", 11))
+        self.a_company.grid(row=0, column=col, padx=2, pady=3); col += 1
+
         ctk.CTkLabel(self.frame, text="↔", font=("Arial",16,"bold"), text_color=COLOR_ACCENT2,
                      width=24).grid(row=0, column=col, padx=2); col += 1
 
@@ -106,6 +111,11 @@ class LinkRow:
         self.b_pass = ctk.CTkEntry(self.frame, textvariable=self.b_pass_var, width=70,
                                     placeholder_text="pass", show="•", height=28)
         self.b_pass.grid(row=0, column=col, padx=2, pady=3); col += 1
+
+        self.b_company_var = tk.StringVar()
+        self.b_company = ctk.CTkEntry(self.frame, textvariable=self.b_company_var, width=50,
+                                       placeholder_text="co#", height=28, font=("SF Pro Display", 11))
+        self.b_company.grid(row=0, column=col, padx=2, pady=3); col += 1
 
         ctk.CTkLabel(self.frame, text="→", font=("Arial",14), text_color=COLOR_ORANGE,
                      width=16).grid(row=0, column=col, padx=1); col += 1
@@ -157,19 +167,32 @@ class LinkRow:
         try: return int(val.rsplit("(",1)[1].rstrip(")"))
         except: return 0
 
+    def _parse_company(self, val):
+        val = (val or "").strip()
+        if not val:
+            return None
+        try:
+            return int(val)
+        except ValueError:
+            return None
+
     def get_config(self):
         return {
             "label": f"Link {self.index+1}",
             "a_username": self.a_user_var.get().strip(), "a_password": self.a_pass_var.get().strip(),
+            "a_company_id": self._parse_company(self.a_company_var.get()),
             "a_target_type": self.a_ttype_var.get(), "a_target_id": self._parse_tid(self.a_tid_var.get()),
             "b_username": self.b_user_var.get().strip(), "b_password": self.b_pass_var.get().strip(),
+            "b_company_id": self._parse_company(self.b_company_var.get()),
             "b_target_type": self.b_ttype_var.get(), "b_target_id": self._parse_tid(self.b_tid_var.get()),
         }
 
     def set_config(self, cfg):
         self.a_user_var.set(cfg.get("a_username","")); self.a_pass_var.set(cfg.get("a_password",""))
+        self.a_company_var.set("" if cfg.get("a_company_id") in (None,"") else str(cfg.get("a_company_id")))
         self.a_ttype_var.set(cfg.get("a_target_type","user"))
         self.b_user_var.set(cfg.get("b_username","")); self.b_pass_var.set(cfg.get("b_password",""))
+        self.b_company_var.set("" if cfg.get("b_company_id") in (None,"") else str(cfg.get("b_company_id")))
         self.b_ttype_var.set(cfg.get("b_target_type","user"))
         self._pending_a_tid = cfg.get("a_target_id",0)
         self._pending_b_tid = cfg.get("b_target_id",0)
@@ -222,7 +245,7 @@ class LinkRow:
 
     def set_enabled(self, enabled):
         st = "normal" if enabled else "disabled"
-        for w in (self.a_user,self.a_pass,self.b_user,self.b_pass): w.configure(state=st)
+        for w in (self.a_user,self.a_pass,self.a_company,self.b_user,self.b_pass,self.b_company): w.configure(state=st)
         rs = "readonly" if enabled else "disabled"
         for w in (self.a_ttype,self.a_tid,self.b_ttype,self.b_tid): w.configure(state=rs)
 
@@ -320,8 +343,8 @@ class ServerBridgeApp(ctk.CTk):
         # ── Column headers ──
         ch = ctk.CTkFrame(self, fg_color="transparent")
         ch.pack(fill="x", padx=14, pady=(4,0))
-        for text, w in [("#",28),("●",24),("Type",65),("Target A",140),("→",16),("Bridge A",95),("Pass",70),
-                        ("↔",24),("Bridge B",95),("Pass",70),("→",16),("Type",65),("Target B",140),("",50),("",30)]:
+        for text, w in [("#",28),("●",24),("Type",65),("Target A",140),("→",16),("Bridge A",95),("Pass",70),("Co#",50),
+                        ("↔",24),("Bridge B",95),("Pass",70),("Co#",50),("→",16),("Type",65),("Target B",140),("",50),("",30)]:
             ctk.CTkLabel(ch, text=text, font=("SF Pro Display",9), text_color=COLOR_DIM,
                          width=w).pack(side="left", padx=2)
 
@@ -461,9 +484,11 @@ class ServerBridgeApp(ctk.CTk):
             cfg = r.get_config()
             if not cfg["a_username"] or not cfg["b_username"]: continue
             ea = BridgeEndpoint(label=f"L{r.index+1}/A", server_url=sa, username=cfg["a_username"],
-                                password=cfg["a_password"], target_type=cfg["a_target_type"], target_id=cfg["a_target_id"])
+                                password=cfg["a_password"], target_type=cfg["a_target_type"], target_id=cfg["a_target_id"],
+                                company_id=cfg.get("a_company_id"))
             eb = BridgeEndpoint(label=f"L{r.index+1}/B", server_url=sb, username=cfg["b_username"],
-                                password=cfg["b_password"], target_type=cfg["b_target_type"], target_id=cfg["b_target_id"])
+                                password=cfg["b_password"], target_type=cfg["b_target_type"], target_id=cfg["b_target_id"],
+                                company_id=cfg.get("b_company_id"))
             link = ServerBridgeLink(label=f"Link {r.index+1}", endpoint_a=ea, endpoint_b=eb)
             r.link = link
             self._link_tasks.append(self._loop.create_task(link.run()))
@@ -492,9 +517,11 @@ class ServerBridgeApp(ctk.CTk):
             self._thread.start()
         def create():
             ea = BridgeEndpoint(label=f"L{idx+1}/A", server_url=sa, username=cfg["a_username"],
-                                password=cfg["a_password"], target_type=cfg["a_target_type"], target_id=cfg["a_target_id"])
+                                password=cfg["a_password"], target_type=cfg["a_target_type"], target_id=cfg["a_target_id"],
+                                company_id=cfg.get("a_company_id"))
             eb = BridgeEndpoint(label=f"L{idx+1}/B", server_url=sb, username=cfg["b_username"],
-                                password=cfg["b_password"], target_type=cfg["b_target_type"], target_id=cfg["b_target_id"])
+                                password=cfg["b_password"], target_type=cfg["b_target_type"], target_id=cfg["b_target_id"],
+                                company_id=cfg.get("b_company_id"))
             link = ServerBridgeLink(label=f"Link {idx+1}", endpoint_a=ea, endpoint_b=eb)
             r.link = link
             self._link_tasks.append(self._loop.create_task(link.run()))

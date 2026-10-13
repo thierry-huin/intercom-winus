@@ -183,15 +183,27 @@ function editGroup(id) {
   openModal('groupModal');
 }
 
+function sameId(a, b) {
+  if (a === b) return true;
+  const ia = Number(a);
+  const ib = Number(b);
+  return Number.isFinite(ia) && Number.isFinite(ib) && ia === ib;
+}
+
+/** Users eligible for group membership + permission matrix (exclude global superadmin only). */
+function matrixUsers() {
+  return users.filter((u) => u.role !== 'superadmin');
+}
+
 function renderGroupMemberCheckboxes(selectedIds) {
   const container = document.getElementById('groupMembersCheckboxes');
-  const nonAdminUsers = users.filter((u) => u.role !== 'admin');
-  container.innerHTML = nonAdminUsers
+  const eligible = matrixUsers();
+  container.innerHTML = eligible
     .map(
       (u) => `
     <label>
-      <input type="checkbox" value="${u.id}" ${selectedIds.includes(u.id) ? 'checked' : ''}>
-      ${u.display_name} (${u.username})
+      <input type="checkbox" value="${u.id}" ${selectedIds.some((id) => sameId(id, u.id)) ? 'checked' : ''}>
+      ${u.display_name || u.username} (${u.username})${u.role === 'admin' ? ' [admin]' : ''}
     </label>`
     )
     .join('');
@@ -249,7 +261,8 @@ async function loadPermissions() {
 
 function renderPermissionMatrix() {
   const container = document.getElementById('permMatrix');
-  const allNonAdmin = users.filter((u) => u.role !== 'admin');
+  // Include company admins; only global superadmin stays out of the matrix.
+  const allMatrix = matrixUsers();
 
   // Update group filter dropdown
   const filterSelect = document.getElementById('permGroupFilter');
@@ -265,29 +278,34 @@ function renderPermissionMatrix() {
   }
 
   // Apply group filter
-  let nonAdminUsers;
-  const filterGroupId = parseInt(filterSelect.value);
+  let matrix;
+  const filterGroupId = parseInt(filterSelect.value, 10);
   if (filterGroupId) {
-    const group = groups.find(g => g.id === filterGroupId);
-    const memberIds = new Set(group ? group.members.map(m => m.id) : []);
-    nonAdminUsers = allNonAdmin.filter(u => memberIds.has(u.id));
+    const group = groups.find(g => sameId(g.id, filterGroupId));
+    const memberIds = group ? group.members.map(m => m.id) : [];
+    matrix = allMatrix.filter(u => memberIds.some(mid => sameId(mid, u.id)));
   } else {
-    nonAdminUsers = allNonAdmin;
+    matrix = allMatrix;
   }
 
   // Sort alphabetically by display_name (same order for rows AND columns)
-  nonAdminUsers.sort((a, b) => a.display_name.localeCompare(b.display_name));
+  matrix.sort((a, b) => String(a.display_name || a.username).localeCompare(String(b.display_name || b.username)));
 
-  if (nonAdminUsers.length === 0) {
+  if (matrix.length === 0) {
     container.innerHTML = '<p style="color:var(--text-light)">No hay usuarios para mostrar.</p>';
     return;
   }
 
+  const label = (u) => {
+    const name = u.display_name || u.username;
+    return u.role === 'admin' ? `${name} [admin]` : name;
+  };
+
   let html = '<table><thead><tr><th>De \\ A</th>';
 
   // Column headers: users (same sorted order)
-  for (const u of nonAdminUsers) {
-    html += `<th title="${u.username}">${u.display_name}</th>`;
+  for (const u of matrix) {
+    html += `<th title="${u.username}">${label(u)}</th>`;
   }
 
   // Column headers: groups
@@ -298,18 +316,18 @@ function renderPermissionMatrix() {
   html += '</tr></thead><tbody>';
 
   // Rows (same sorted order)
-  for (const fromUser of nonAdminUsers) {
-    html += `<tr><td><strong>${fromUser.display_name}</strong></td>`;
+  for (const fromUser of matrix) {
+    html += `<tr><td><strong>${label(fromUser)}</strong></td>`;
 
     // User-to-user permissions
-    for (const toUser of nonAdminUsers) {
-      if (fromUser.id === toUser.id) {
+    for (const toUser of matrix) {
+      if (sameId(fromUser.id, toUser.id)) {
         html += '<td class="self-cell">&mdash;</td>';
       } else {
         const perm = permissions.find(
-          (p) => p.from_user_id === fromUser.id && p.to_user_id === toUser.id
+          (p) => sameId(p.from_user_id, fromUser.id) && sameId(p.to_user_id, toUser.id)
         );
-        const checked = perm && perm.can_talk ? 'checked' : '';
+        const checked = perm && (perm.can_talk === 1 || perm.can_talk === true) ? 'checked' : '';
         html += `<td><input type="checkbox" data-from="${fromUser.id}" data-to="${toUser.id}" data-type="user" ${checked}></td>`;
       }
     }
@@ -317,9 +335,9 @@ function renderPermissionMatrix() {
     // User-to-group permissions
     for (const g of groups) {
       const perm = groupPermissions.find(
-        (p) => p.from_user_id === fromUser.id && p.to_group_id === g.id
+        (p) => sameId(p.from_user_id, fromUser.id) && sameId(p.to_group_id, g.id)
       );
-      const checked = perm && perm.can_talk ? 'checked' : '';
+      const checked = perm && (perm.can_talk === 1 || perm.can_talk === true) ? 'checked' : '';
       html += `<td style="background:#f8faff"><input type="checkbox" data-from="${fromUser.id}" data-to="${g.id}" data-type="group" ${checked}></td>`;
     }
 

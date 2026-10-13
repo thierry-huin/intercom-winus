@@ -6,6 +6,8 @@ import 'package:http/http.dart' as http;
 class ApiService {
   final String baseUrl;
   String? _token;
+  /// Superadmin company filter. Sent as X-Company-Id on admin calls.
+  int? _companyId;
   static const _timeout = Duration(seconds: 10);
   static const _maxRetries = 2;
 
@@ -14,9 +16,14 @@ class ApiService {
   void setToken(String? token) => _token = token;
   String? get token => _token;
 
+  /// Active company scope for superadmin. null = all companies.
+  int? get companyId => _companyId;
+  void setCompanyId(int? id) => _companyId = id;
+
   Map<String, String> get _headers => {
         'Content-Type': 'application/json',
         if (_token != null) 'Authorization': 'Bearer $_token',
+        if (_companyId != null) 'X-Company-Id': '$_companyId',
       };
 
   // ======================== CORE REQUEST WITH RETRY ========================
@@ -77,14 +84,50 @@ class ApiService {
 
   // ---- Auth ----
 
-  Future<Map<String, dynamic>> login(String username, String password) async {
+  /// Public company list for the login picker (active companies only).
+  Future<List<dynamic>> getLoginCompanies() async {
+    final r = await _fetch('GET', '/api/auth/companies',
+        headers: {'Content-Type': 'application/json'});
+    final data = _decode(r);
+    _checkStatus(r, data);
+    return data as List<dynamic>;
+  }
+
+  /// Login. Optional [companyId] disambiguates the same username in several
+  /// companies. On ambiguity the server returns HTTP 409 with
+  /// `code: COMPANY_REQUIRED` and a `companies` list — rethrow as
+  /// [CompanyRequiredException].
+  Future<Map<String, dynamic>> login(
+    String username,
+    String password, {
+    int? companyId,
+    String? company,
+  }) async {
+    final body = <String, dynamic>{
+      'username': username,
+      'password': password,
+      if (companyId != null) 'company_id': companyId,
+      if (company != null && company.isNotEmpty) 'company': company,
+    };
     final r = await _fetch('POST', '/api/auth/login',
         headers: {'Content-Type': 'application/json'},
-        body: jsonEncode({'username': username, 'password': password}));
-    final data = _decode(r) as Map<String, dynamic>;
+        body: jsonEncode(body));
+    final data = _decode(r);
+    if (r.statusCode == 409 &&
+        data is Map &&
+        data['code'] == 'COMPANY_REQUIRED') {
+      throw CompanyRequiredException(
+        (data['error'] ?? 'Elige la empresa').toString(),
+        List<Map<String, dynamic>>.from(
+          (data['companies'] as List? ?? const [])
+              .map((e) => Map<String, dynamic>.from(e as Map)),
+        ),
+      );
+    }
     _checkStatus(r, data);
-    _token = data['token'];
-    return data;
+    final map = data as Map<String, dynamic>;
+    _token = map['token'];
+    return map;
   }
 
   // ---- Targets ----
@@ -92,6 +135,52 @@ class ApiService {
   Future<Map<String, dynamic>> getMyTargets() async {
     final r = await _fetch('GET', '/api/rooms/my-targets');
     return _decode(r) as Map<String, dynamic>;
+  }
+
+  // ---- Admin: Companies (superadmin) ----
+
+  Future<List<dynamic>> getCompanies() async {
+    final r = await _fetch('GET', '/api/admin/companies');
+    final data = _decode(r);
+    _checkStatus(r, data);
+    return data as List<dynamic>;
+  }
+
+  Future<Map<String, dynamic>> createCompany(Map<String, dynamic> data) async {
+    final r = await _fetch('POST', '/api/admin/companies', body: jsonEncode(data));
+    final decoded = _decode(r) as Map<String, dynamic>;
+    _checkStatus(r, decoded);
+    return decoded;
+  }
+
+  Future<Map<String, dynamic>> updateCompany(int id, Map<String, dynamic> data) async {
+    final r = await _fetch('PUT', '/api/admin/companies/$id', body: jsonEncode(data));
+    final decoded = _decode(r) as Map<String, dynamic>;
+    _checkStatus(r, decoded);
+    return decoded;
+  }
+
+  Future<void> deleteCompany(int id) async {
+    final r = await _fetch('DELETE', '/api/admin/companies/$id');
+    final data = _decode(r, allowEmpty: true);
+    _checkStatus(r, data);
+  }
+
+  /// Superadmin: upload company logo as data-URL / base64. Renaming company
+  /// never changes its numeric id; logos are keyed by that id.
+  Future<Map<String, dynamic>> uploadCompanyLogo(int id, String imageBase64) async {
+    final r = await _fetch('POST', '/api/admin/companies/$id/logo',
+        body: jsonEncode({'image_base64': imageBase64}));
+    final decoded = _decode(r) as Map<String, dynamic>;
+    _checkStatus(r, decoded);
+    return decoded;
+  }
+
+  Future<Map<String, dynamic>> deleteCompanyLogo(int id) async {
+    final r = await _fetch('DELETE', '/api/admin/companies/$id/logo');
+    final decoded = _decode(r) as Map<String, dynamic>;
+    _checkStatus(r, decoded);
+    return decoded;
   }
 
   // ---- Admin: Users ----
@@ -105,11 +194,15 @@ class ApiService {
 
   Future<Map<String, dynamic>> createUser(Map<String, dynamic> data) async {
     final r = await _fetch('POST', '/api/admin/users', body: jsonEncode(data));
-    return _decode(r) as Map<String, dynamic>;
+    final decoded = _decode(r) as Map<String, dynamic>;
+    _checkStatus(r, decoded);
+    return decoded;
   }
 
   Future<void> updateUser(int id, Map<String, dynamic> data) async {
-    await _fetch('PUT', '/api/admin/users/$id', body: jsonEncode(data));
+    final r = await _fetch('PUT', '/api/admin/users/$id', body: jsonEncode(data));
+    final decoded = _decode(r, allowEmpty: true);
+    _checkStatus(r, decoded);
   }
 
   /// Superadmin-only: rename the login username for the given user id.
@@ -276,4 +369,14 @@ class ApiService {
     final decoded = _decode(r, allowEmpty: true);
     _checkStatus(r, decoded);
   }
+}
+
+/// Thrown when the same username exists in multiple companies and the client
+/// must pick one (HTTP 409 COMPANY_REQUIRED).
+class CompanyRequiredException implements Exception {
+  final String message;
+  final List<Map<String, dynamic>> companies;
+  CompanyRequiredException(this.message, this.companies);
+  @override
+  String toString() => message;
 }

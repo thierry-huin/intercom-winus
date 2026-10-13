@@ -17,3 +17,7 @@ key.properties
 key.properties
 *.jks
 *.keystore
+
+*.jks
+key.properties
+winus-upload.jks

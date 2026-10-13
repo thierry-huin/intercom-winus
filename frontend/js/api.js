@@ -37,17 +37,23 @@ const IntercomAPI = (() => {
     return data;
   }
 
-  async function login(username, password) {
-    const data = await request('POST', '/api/auth/login', { username, password });
+  async function login(username, password, extra = {}) {
+    const body = { username, password, ...extra };
+    const data = await request('POST', '/api/auth/login', body);
     localStorage.setItem(TOKEN_KEY, data.token);
     localStorage.setItem(USER_KEY, JSON.stringify(data.user));
     return data;
+  }
+
+  async function getLoginCompanies() {
+    return request('GET', '/api/auth/companies');
   }
 
   return {
     getToken,
     getUser,
     login,
+    getLoginCompanies,
     logout,
     get: (url) => request('GET', url),
     post: (url, body) => request('POST', url, body),

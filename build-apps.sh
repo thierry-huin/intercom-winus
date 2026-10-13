@@ -3,6 +3,11 @@
 set -e
 cd "$(dirname "$0")/flutter_app"
 
+# Patch wakelock_plus Android pigeon package bug before builds
+if [ -f tool/patch_wakelock_plus_android.py ]; then
+  python3 tool/patch_wakelock_plus_android.py || true
+fi
+
 echo "=== Building Web ==="
 flutter build web --release
 

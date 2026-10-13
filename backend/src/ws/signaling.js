@@ -674,7 +674,11 @@ function getActivePttSessions(userId) {
  */
 function getBridgeStatus() {
   const bridges = db.prepare(
-    "SELECT id, username, display_name FROM users WHERE role = 'bridge' ORDER BY id"
+    `SELECT u.id, u.username, u.display_name, u.company_id, c.name AS company_name
+       FROM users u
+       LEFT JOIN companies c ON c.id = u.company_id
+      WHERE u.role = 'bridge'
+      ORDER BY u.id`
   ).all();
 
   return bridges.map(b => {
@@ -699,6 +703,8 @@ function getBridgeStatus() {
       id: b.id,
       username: b.username,
       display_name: b.display_name,
+      company_id: b.company_id ?? null,
+      company_name: b.company_name || null,
       online,
       hasProducer: !!(peer?.producer && !peer.producer.closed),
       producerPaused: peer?.producer?.paused ?? true,

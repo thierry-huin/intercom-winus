@@ -39,9 +39,23 @@ cd "$SCRIPT_DIR"
 # ======================== 2. BUILD DOCKER IMAGES ========================
 echo -e "${CYAN}[2/5]${NC} Building Docker images (this may take a few minutes)..."
 
-# Tag images with a fixed name so we can reference them in the deploy compose
-docker compose build backend
+# ALWAYS rebuild backend without cache so multi-company (company-scope.js,
+# /api/auth/companies, companies admin APIs) is baked into the image.
+# Cached builds previously left old backends on Proxmox targets.
+echo -e "  ${YELLOW}Rebuilding backend --no-cache (multi-company)...${NC}"
+docker compose build --no-cache backend
 echo -e "  ${GREEN}✓${NC} Backend image built"
+
+# Verify multi-company is inside the image before export
+if ! docker run --rm --entrypoint ls winus-intercom-backend:latest /app/src/services/company-scope.js >/dev/null 2>&1; then
+  echo -e "  ${RED}✗ company-scope.js missing in backend image — aborting export${NC}"
+  exit 1
+fi
+if ! docker run --rm --entrypoint grep winus-intercom-backend:latest -q "router.get('/companies'" /app/src/routes/auth.js 2>/dev/null; then
+  echo -e "  ${RED}✗ /api/auth/companies route missing in backend image — aborting export${NC}"
+  exit 1
+fi
+echo -e "  ${GREEN}✓${NC} multi-company backend verified in image"
 
 docker compose build nginx
 echo -e "  ${GREEN}✓${NC} Nginx image built"

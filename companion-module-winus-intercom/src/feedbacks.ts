@@ -96,11 +96,11 @@ export function buildFeedbacks(self: WinusIntercomInstance): CompanionFeedbackDe
 				return self.isReceivingFrom(target)
 			},
 		},
-		mic_muted: {
-			name: 'Mic: muted',
+		mute_all: {
+			name: 'Mute All: active',
 			type: 'boolean',
 			defaultStyle: {
-				bgcolor: combineRgb(180, 30, 30),
+				bgcolor: combineRgb(200, 30, 30),
 				color: combineRgb(255, 255, 255),
 			},
 			options: [],

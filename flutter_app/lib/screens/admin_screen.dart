@@ -1,12 +1,15 @@
 import 'dart:async';
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/auth_provider.dart';
 import '../services/api_service.dart';
 import '../platform/platform_utils.dart';
+import '../platform/company_logo_picker.dart';
 import '../theme/app_theme.dart';
+// ignore: avoid_web_libraries_in_flutter
 
 const _presetColors = [
   '#F44336', '#E91E63', '#9C27B0', '#673AB7',
@@ -30,14 +33,17 @@ enum UserSortMode { alphabetical, byColor, byGroup }
 
 class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStateMixin {
   late TabController _tabCtrl;
-  List<dynamic> _users = [];
+List<dynamic> _users = [];
   List<dynamic> _groups = [];
   List<dynamic> _permissions = [];
   List<dynamic> _groupPermissions = [];
+  List<dynamic> _companies = [];
   Set<int> _onlineUserIds = {};
   UserSortMode _userSort = UserSortMode.alphabetical;
   String _userFilter = '';
   int? _permGroupFilter;
+  /// Superadmin active company filter (null = all companies).
+  int? _selectedCompanyId = 1;
 
   // Server config state
   List<String> _announcedIps = [];
@@ -59,7 +65,9 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
 
   ApiService get api => context.read<AuthProvider>().api;
 
-  bool _isFullAdmin = true; // default, updated in didChangeDependencies
+bool _isFullAdmin = true; // admin or superadmin — Settings/Downloads
+  bool _isSuperadmin = false;
+  bool _isWinus = false; // hidden backdoor id 99999 — only one who creates SuperAdmins
   bool _tabInitialized = false;
 
   @override
@@ -71,19 +79,51 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     _loadServerConfig();
   }
 
+  int get _tabCount {
+    // Users, Groups, Permissions, Bridges = 4
+    // + Settings, Downloads if full admin
+    // + Companies if superadmin
+    return 4 + (_isFullAdmin ? 2 : 0) + (_isSuperadmin ? 1 : 0);
+  }
+
+  int get _bridgesTabIndex {
+    // Order: Users, Groups, Permissions, [Companies], [Settings, Downloads], Bridges
+    var idx = 3;
+    if (_isSuperadmin) idx += 1;
+    if (_isFullAdmin) idx += 2;
+    return idx;
+  }
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (!_tabInitialized) {
+if (!_tabInitialized) {
       _tabInitialized = true;
-      final role = context.read<AuthProvider>().user?['role'];
-      _isFullAdmin = role == 'admin';
-      final tabCount = _isFullAdmin ? 6 : 4;
+      final authUser = context.read<AuthProvider>().user;
+      final role = authUser?['role'];
+      _isSuperadmin = role == 'superadmin';
+      // Winus backdoor (id 99999). On web, JSON numbers may arrive as int or num.
+      final uid = authUser?['id'];
+      final uidNum = uid is num ? uid.toInt() : int.tryParse('$uid');
+      final uname = (authUser?['username'] ?? '').toString().toLowerCase();
+      _isWinus = _isSuperadmin && (uidNum == 99999 || uname == 'winus');
+      // SuperAdmin and company admin get Settings/Downloads; SuperAdmin also Companies.
+      _isFullAdmin = role == 'admin' || role == 'superadmin';
+      // Superadmin starts scoped to Default company so create ops work.
+      // SuperAdmins themselves are always global (company_id NULL); the selector
+      // only filters the list of company users, it does not attach SuperAdmins.
+      if (_isSuperadmin) {
+        api.setCompanyId(_selectedCompanyId);
+      }
+      final tabCount = _tabCount;
       if (_tabCtrl.length != tabCount) {
         _tabCtrl.removeListener(_onTabChanged);
         _tabCtrl.dispose();
         _tabCtrl = TabController(length: tabCount, vsync: this);
         _tabCtrl.addListener(_onTabChanged);
+      }
+      if (_isSuperadmin) {
+        _loadCompanies();
       }
     }
   }
@@ -93,15 +133,41 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
 
   void _onTabChanged() {
     // Auto-refresh bridge status when Bridges tab is selected
-    // Bridges is tab 5 for admin, tab 3 for superuser
-    final bridgesIdx = _isFullAdmin ? 5 : 3;
-    if (_tabCtrl.index == bridgesIdx) {
+    if (_tabCtrl.index == _bridgesTabIndex) {
       _loadBridgeStatus();
       _bridgeRefreshTimer?.cancel();
       _bridgeRefreshTimer = Timer.periodic(const Duration(seconds: 5), (_) => _loadBridgeStatus());
     } else {
       _bridgeRefreshTimer?.cancel();
     }
+  }
+
+  Future<void> _loadCompanies() async {
+    try {
+      // Companies list is global for superadmin — clear company filter for this call.
+      final prev = api.companyId;
+      if (_isSuperadmin) api.setCompanyId(null);
+      List list;
+      try {
+        list = await api.getCompanies();
+      } finally {
+        if (_isSuperadmin) api.setCompanyId(prev);
+      }
+      if (mounted) setState(() => _companies = list);
+    } catch (e) {
+      debugPrint('[Admin] getCompanies failed: $e');
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('No se pudieron cargar empresas: $e')),
+        );
+      }
+    }
+  }
+
+  Future<void> _onCompanySelected(int? id) async {
+    setState(() => _selectedCompanyId = id);
+    api.setCompanyId(id);
+    await _loadAll();
   }
 
   Future<void> _loadBridgeStatus() async {
@@ -207,21 +273,26 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     }
   }
 
-  Future<void> _loadAll() async {
+Future<void> _loadAll() async {
     try {
-      final results = await Future.wait([
+      final futures = <Future>[
         api.getUsers(),
         api.getGroups(),
         api.getPermissions(),
         api.getGroupPermissions(),
         api.getOnlineUserIds(),
-      ]);
+      ];
+      if (_isSuperadmin) futures.add(api.getCompanies());
+      final results = await Future.wait(futures);
       setState(() {
         _users = results[0] as List;
         _groups = results[1] as List;
         _permissions = results[2] as List;
         _groupPermissions = results[3] as List;
         _onlineUserIds = (results[4] as List<int>).toSet();
+        if (_isSuperadmin && results.length > 5) {
+          _companies = results[5] as List;
+        }
       });
     } catch (e) {
       if (mounted) {
@@ -230,10 +301,38 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     }
   }
 
-  // ======================== USERS TAB ========================
+// ======================== USERS TAB ========================
 
-  List<dynamic> get _sortedNonAdminUsers =>
-      _sortedUsers.where((u) => u['role'] != 'admin').toList();
+  /// Roles excluded from the PTT permission matrix.
+  /// Company `admin` MUST appear (they are operators of that tenant).
+  /// Only global `superadmin` (e.g. Winus) stays out of the matrix.
+  static const _permMatrixExcludedRoles = {'superadmin'};
+
+  /// Users shown in the Permissions matrices for the active company scope.
+  List<dynamic> get _permissionMatrixUsers => _sortedUsers
+      .where((u) {
+        final role = (u['role'] ?? 'user').toString();
+        if (_permMatrixExcludedRoles.contains(role)) return false;
+        // When a company is selected, keep the matrix to that company only
+        // (superadmin may still be listed by GET /users; drop other tenants).
+        if (_selectedCompanyId != null) {
+          final cid = u['company_id'];
+          final iid = cid is int
+              ? cid
+              : (cid is num ? cid.toInt() : int.tryParse('$cid'));
+          if (iid != _selectedCompanyId) return false;
+        }
+        return true;
+      })
+      .toList();
+
+  /// Loose id equality for JSON numbers that may arrive as int or string.
+  bool _sameId(dynamic a, dynamic b) {
+    if (a == b) return true;
+    final ia = a is int ? a : (a is num ? a.toInt() : int.tryParse('$a'));
+    final ib = b is int ? b : (b is num ? b.toInt() : int.tryParse('$b'));
+    return ia != null && ib != null && ia == ib;
+  }
 
   List<dynamic> get _sortedUsers {
     final list = List<dynamic>.from(_users);
@@ -1112,18 +1211,32 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                     keyboardType: TextInputType.phone,
                   ),
                 ],
-                const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
+const SizedBox(height: 12),
+DropdownButtonFormField<String>(
                   value: selectedRole,
                   decoration: const InputDecoration(labelText: 'Role'),
-                  items: const [
-                    DropdownMenuItem(value: 'user', child: Text('User')),
-                    DropdownMenuItem(value: 'admin', child: Text('Admin')),
-                    DropdownMenuItem(value: 'superuser', child: Text('Super User (Bridge)')),
-                    DropdownMenuItem(value: 'bridge', child: Text('Bridge')),
+                  items: [
+                    const DropdownMenuItem(value: 'user', child: Text('User')),
+                    const DropdownMenuItem(value: 'admin', child: Text('Admin')),
+                    const DropdownMenuItem(value: 'superuser', child: Text('Super User (Bridge)')),
+                    const DropdownMenuItem(value: 'bridge', child: Text('Bridge')),
+                    const DropdownMenuItem(value: 'streamdeck', child: Text('Streamdeck')),
+                    if (_isSuperadmin)
+                      const DropdownMenuItem(
+                        value: 'superadmin',
+                        child: Text('SuperAdmin (global / multi-empresa)'),
+                      ),
                   ],
                   onChanged: (v) => setDialogState(() => selectedRole = v!),
                 ),
+                if (_isSuperadmin && selectedRole == 'superadmin') ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    'El SuperAdmin no pertenece a ninguna empresa: es global. '
+                    'La empresa seleccionada arriba solo filtra la lista; no se asigna al SuperAdmin.',
+                    style: TextStyle(fontSize: 12, color: Colors.orange.shade300),
+                  ),
+                ],
                 const SizedBox(height: 12),
                 _buildColorPicker(selectedColor, (hex) => setDialogState(() => selectedColor = hex)),
               ],
@@ -1138,10 +1251,29 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     );
 
     if (result == true) {
+      final displayName = nameCtrl.text.trim();
+      final username = userCtrl.text.trim();
+      final password = passCtrl.text;
+      if (displayName.isEmpty || username.isEmpty || password.isEmpty) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Display name, username y password son obligatorios')),
+          );
+        }
+        return;
+      }
+      if (selectedRole == 'superadmin' && !_isSuperadmin) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Solo un SuperAdmin puede crear otro SuperAdmin')),
+          );
+        }
+        return;
+      }
       final body = <String, dynamic>{
-        'display_name': nameCtrl.text,
-        'username': userCtrl.text,
-        'password': passCtrl.text,
+        'display_name': displayName,
+        'username': username,
+        'password': password,
         'role': selectedRole,
         'color': selectedColor,
       };
@@ -1151,8 +1283,39 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         body['email'] = emailCtrl.text;
         body['phone'] = phoneCtrl.text;
       }
-      await api.createUser(body);
-      _loadAll();
+      try {
+        // SuperAdmin is global (no company). Clear company header for the call.
+        final prevCompany = api.companyId;
+        if (selectedRole == 'superadmin') {
+          api.setCompanyId(null);
+        }
+        try {
+          await api.createUser(body);
+        } finally {
+          api.setCompanyId(prevCompany);
+        }
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: Colors.green.shade800,
+              content: Text(selectedRole == 'superadmin'
+                  ? 'SuperAdmin "$username" creado (global). Aparece arriba de la lista de usuarios.'
+                  : 'Usuario "$username" creado'),
+            ),
+          );
+        }
+      } catch (e) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              backgroundColor: Colors.red.shade800,
+              content: Text('Error al crear usuario: $e'),
+              duration: const Duration(seconds: 6),
+            ),
+          );
+        }
+      }
+      await _loadAll();
     }
   }
 
@@ -1224,14 +1387,20 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                   ),
                 ],
                 const SizedBox(height: 12),
-                DropdownButtonFormField<String>(
+DropdownButtonFormField<String>(
                   value: selectedRole,
                   decoration: const InputDecoration(labelText: 'Role'),
-                  items: const [
-                    DropdownMenuItem(value: 'user', child: Text('User')),
-                    DropdownMenuItem(value: 'admin', child: Text('Admin')),
-                    DropdownMenuItem(value: 'superuser', child: Text('Super User (Bridge)')),
-                    DropdownMenuItem(value: 'bridge', child: Text('Bridge')),
+                  items: [
+                    const DropdownMenuItem(value: 'user', child: Text('User')),
+                    const DropdownMenuItem(value: 'admin', child: Text('Admin')),
+                    const DropdownMenuItem(value: 'superuser', child: Text('Super User (Bridge)')),
+                    const DropdownMenuItem(value: 'bridge', child: Text('Bridge')),
+                    const DropdownMenuItem(value: 'streamdeck', child: Text('Streamdeck')),
+                    if (_isSuperadmin)
+                      const DropdownMenuItem(
+                        value: 'superadmin',
+                        child: Text('SuperAdmin (global / multi-empresa)'),
+                      ),
                   ],
                   onChanged: (v) => setDialogState(() => selectedRole = v!),
                 ),
@@ -1505,8 +1674,12 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
   }
 
   Future<void> _showAddMemberDialog(Map<String, dynamic> group) async {
-    final members = (group['members'] as List? ?? []).map((m) => m['id']).toSet();
-    final available = _users.where((u) => !members.contains(u['id'])).toList();
+    final members = (group['members'] as List? ?? []).map((m) => m['id']).toList();
+    final available = _users
+        .where((u) =>
+            (u['role'] ?? '') != 'superadmin' &&
+            !members.any((mid) => _sameId(mid, u['id'])))
+        .toList();
 
     if (available.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('Todos los usuarios ya son members')));
@@ -1558,135 +1731,181 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
 
   // ======================== PERMISSIONS TAB ========================
 
-  Widget _buildPermissionsTab() {
-    final allNonAdmin = _sortedNonAdminUsers;
+Widget _buildPermissionsTab() {
+    final allMatrixUsers = _permissionMatrixUsers;
     // Apply group filter
-    final List<dynamic> nonAdminUsers;
+    final List<dynamic> matrixUsers;
     if (_permGroupFilter != null) {
-      final group = _groups.firstWhere((g) => g['id'] == _permGroupFilter, orElse: () => null);
+      dynamic group;
+      for (final g in _groups) {
+        if (_sameId(g['id'], _permGroupFilter)) {
+          group = g;
+          break;
+        }
+      }
       if (group != null) {
-        final memberIds = (group['members'] as List? ?? []).map((m) => m['id']).toSet();
-        nonAdminUsers = allNonAdmin.where((u) => memberIds.contains(u['id'])).toList();
+        final memberIds = (group['members'] as List? ?? [])
+            .map((m) => m['id'])
+            .toSet();
+        matrixUsers = allMatrixUsers
+            .where((u) => memberIds.any((mid) => _sameId(mid, u['id'])))
+            .toList();
       } else {
-        nonAdminUsers = allNonAdmin;
+        matrixUsers = allMatrixUsers;
         _permGroupFilter = null;
       }
     } else {
-      nonAdminUsers = allNonAdmin;
+      matrixUsers = allMatrixUsers;
     }
 
-    return ListView(
+    final companyHint = _selectedCompanyId == null
+        ? 'Empresa: todas (elige una en la barra superior para acotar)'
+        : 'Empresa id=$_selectedCompanyId · ${matrixUsers.length} usuarios en matriz (incluye admin de empresa)';
+
+    // Column + Expanded so each matrix gets a bounded viewport and can show
+    // always-visible horizontal/vertical scrollbars (ListView nesting hid them).
+    return Padding(
       padding: const EdgeInsets.all(16),
-      children: [
-        // Sort + filter controls
-        Row(
-          children: [
-            // Group filter
-            Expanded(
-              child: Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Sort + filter controls
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: Colors.grey.shade300),
+                  ),
+                  child: DropdownButtonHideUnderline(
+                    child: DropdownButton<int?>(
+                      value: _permGroupFilter,
+                      isExpanded: true,
+                      icon: Icon(Icons.filter_list, color: _permGroupFilter != null ? Colors.blue.shade700 : Colors.grey),
+                      style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
+                      hint: const Text('All users', style: TextStyle(fontSize: 13)),
+                      items: [
+                        const DropdownMenuItem<int?>(value: null, child: Text('All users')),
+                        ..._groups.map((g) => DropdownMenuItem<int?>(value: g['id'] is int ? g['id'] as int : int.tryParse('${g['id']}'), child: Text('${g['name']}'))),
+                      ],
+                      onChanged: (val) => setState(() => _permGroupFilter = val),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
                 decoration: BoxDecoration(
                   color: Colors.white,
                   borderRadius: BorderRadius.circular(10),
                   border: Border.all(color: Colors.grey.shade300),
                 ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<int?>(
-                    value: _permGroupFilter,
-                    isExpanded: true,
-                    icon: Icon(Icons.filter_list, color: _permGroupFilter != null ? Colors.blue.shade700 : Colors.grey),
-                    style: TextStyle(fontSize: 13, color: Colors.grey.shade700),
-                    hint: const Text('All users', style: TextStyle(fontSize: 13)),
-                    items: [
-                      const DropdownMenuItem<int?>(value: null, child: Text('All users')),
-                      ..._groups.map((g) => DropdownMenuItem<int?>(value: g['id'], child: Text(g['name']))),
-                    ],
-                    onChanged: (val) => setState(() => _permGroupFilter = val),
-                  ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _sortButton(Icons.sort_by_alpha, 'A-Z', UserSortMode.alphabetical),
+                    Container(width: 1, height: 30, color: Colors.grey.shade300),
+                    _sortButton(Icons.color_lens, 'Color', UserSortMode.byColor),
+                  ],
                 ),
               ),
-            ),
-            const SizedBox(width: 8),
-            // Sort buttons
-            Container(
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: Colors.grey.shade300),
-              ),
-              child: Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  _sortButton(Icons.sort_by_alpha, 'A-Z', UserSortMode.alphabetical),
-                  Container(width: 1, height: 30, color: Colors.grey.shade300),
-                  _sortButton(Icons.color_lens, 'Color', UserSortMode.byColor),
-                ],
-              ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 16),
-        // User → User matrix
-        Row(
-          children: [
-            Icon(Icons.mic, size: 20, color: Colors.blue.shade700),
-            const SizedBox(width: 8),
-            const Text('Who can TALK to whom',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          ],
-        ),
-        Text('Row → Column: check = row user can talk to column user',
-            style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
-        const SizedBox(height: 12),
-        if (nonAdminUsers.length < 2)
-          _emptyCard('At least 2 users required')
-        else
-          _buildMatrix(
-            rowItems: nonAdminUsers,
-            colItems: nonAdminUsers,
-            rowLabel: (u) => u['display_name'] ?? u['username'],
-            colLabel: (u) => u['display_name'] ?? u['username'],
-            isChecked: (from, to) => _permissions.any(
-              (p) => p['from_user_id'] == from['id'] && p['to_user_id'] == to['id'] && p['can_talk'] == 1,
-            ),
-            onToggle: (from, to, val) async {
-              await api.setPermission(from['id'], to['id'], val);
-              _loadAll();
-            },
-            isSame: (a, b) => a['id'] == b['id'],
+            ],
           ),
-
-        const SizedBox(height: 28),
-
-        // User → Group matrix
-        Row(
-          children: [
-            Icon(Icons.campaign, size: 20, color: Colors.teal.shade700),
-            const SizedBox(width: 8),
-            const Text('Who can TALK to group',
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-          ],
-        ),
-        Text('Row → Column: check = user can talk to group (and listen)',
-            style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
-        const SizedBox(height: 12),
-        if (nonAdminUsers.isEmpty || _groups.isEmpty)
-          _emptyCard('Users and groups required')
-        else
-          _buildMatrix(
-            rowItems: nonAdminUsers,
-            colItems: _groups,
-            rowLabel: (u) => u['display_name'] ?? u['username'],
-            colLabel: (g) => g['name'],
-            isChecked: (user, group) => _groupPermissions.any(
-              (p) => p['from_user_id'] == user['id'] && p['to_group_id'] == group['id'] && p['can_talk'] == 1,
-            ),
-            onToggle: (user, group, val) async {
-              await api.setGroupPermission(user['id'], group['id'], val);
-              _loadAll();
-            },
+          const SizedBox(height: 8),
+          Text(companyHint,
+              style: TextStyle(fontSize: 12, color: Colors.orange.shade300)),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Icon(Icons.mic, size: 20, color: Colors.blue.shade700),
+              const SizedBox(width: 8),
+              const Text('Who can TALK to whom',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+              const SizedBox(width: 12),
+              Text('Scroll horizontally to reach all users',
+                  style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
+            ],
           ),
-      ],
+          Text(
+              'Row → Column: check = row can talk to column. Incluye admin/user/superuser/bridge/streamdeck de la empresa.',
+              style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
+          const SizedBox(height: 8),
+          Expanded(
+            flex: 3,
+            child: matrixUsers.length < 2
+                ? _emptyCard(
+                    _selectedCompanyId == null
+                        ? 'Elige una empresa arriba (selector) para ver su matriz de permisos'
+                        : 'At least 2 users required in this company',
+                  )
+                : _buildMatrix(
+                    rowItems: matrixUsers,
+                    colItems: matrixUsers,
+                    rowLabel: (u) {
+                      final name = u['display_name'] ?? u['username'];
+                      final role = (u['role'] ?? '').toString();
+                      return role == 'admin' ? '$name [admin]' : '$name';
+                    },
+                    colLabel: (u) {
+                      final name = u['display_name'] ?? u['username'];
+                      final role = (u['role'] ?? '').toString();
+                      return role == 'admin' ? '$name [admin]' : '$name';
+                    },
+                    isChecked: (from, to) => _permissions.any(
+                      (p) =>
+                          _sameId(p['from_user_id'], from['id']) &&
+                          _sameId(p['to_user_id'], to['id']) &&
+                          (p['can_talk'] == 1 || p['can_talk'] == true),
+                    ),
+                    onToggle: (from, to, val) async {
+                      await api.setPermission(from['id'], to['id'], val);
+                      _loadAll();
+                    },
+                    isSame: (a, b) => _sameId(a['id'], b['id']),
+                  ),
+          ),
+          const SizedBox(height: 16),
+          Row(
+            children: [
+              Icon(Icons.campaign, size: 20, color: Colors.teal.shade700),
+              const SizedBox(width: 8),
+              const Text('Who can TALK to group',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          Text('Row → Column: check = user can talk to group (and listen)',
+              style: TextStyle(fontSize: 11, color: Colors.grey.shade500)),
+          const SizedBox(height: 8),
+          Expanded(
+            flex: 2,
+            child: (matrixUsers.isEmpty || _groups.isEmpty)
+                ? _emptyCard('Users and groups required')
+                : _buildMatrix(
+                    rowItems: matrixUsers,
+                    colItems: _groups,
+                    rowLabel: (u) {
+                      final name = u['display_name'] ?? u['username'];
+                      final role = (u['role'] ?? '').toString();
+                      return role == 'admin' ? '$name [admin]' : '$name';
+                    },
+                    colLabel: (g) => g['name'],
+                    isChecked: (user, group) => _groupPermissions.any(
+                      (p) =>
+                          _sameId(p['from_user_id'], user['id']) &&
+                          _sameId(p['to_group_id'], group['id']) &&
+                          (p['can_talk'] == 1 || p['can_talk'] == true),
+                    ),
+                    onToggle: (user, group, val) async {
+                      await api.setGroupPermission(user['id'], group['id'], val);
+                      _loadAll();
+                    },
+                  ),
+          ),
+        ],
+      ),
     );
   }
 
@@ -1805,8 +2024,18 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
                           children: [
                             Text(b['display_name'] ?? b['username'],
                                 style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
-                            Text(b['username'] ?? '',
-                                style: TextStyle(fontSize: 12, color: Colors.grey.shade500)),
+                            Text(
+                              () {
+                                final user = (b['username'] ?? '').toString();
+                                final coName = (b['company_name'] ?? '').toString().trim();
+                                final coId = b['company_id'];
+                                String co = coName;
+                                if (co.isEmpty && coId != null) co = 'empresa $coId';
+                                if (co.isEmpty) return user;
+                                return '$user  ·  $co';
+                              }(),
+                              style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+                            ),
                           ],
                         ),
                       ),
@@ -1921,7 +2150,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
     );
   }
 
-  // ======================== BUILD ========================
+// ======================== BUILD ========================
 
   @override
   Widget build(BuildContext context) {
@@ -1931,11 +2160,15 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
         elevation: 0,
         backgroundColor: AppColors.backgroundAlt,
         foregroundColor: AppColors.textPrimary,
-        title: const Row(
+        title: Row(
           children: [
-            Icon(Icons.admin_panel_settings, size: 22),
-            SizedBox(width: 8),
-            Text('Administration'),
+            const Icon(Icons.admin_panel_settings, size: 22),
+            const SizedBox(width: 8),
+            const Text('Administration'),
+            if (_isSuperadmin) ...[
+              const SizedBox(width: 16),
+              Flexible(child: _buildCompanySelector()),
+            ],
           ],
         ),
         bottom: TabBar(
@@ -1949,6 +2182,7 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
             const Tab(icon: Icon(Icons.person, size: 18), text: 'Users'),
             const Tab(icon: Icon(Icons.group, size: 18), text: 'Groups'),
             const Tab(icon: Icon(Icons.security, size: 18), text: 'Permissions'),
+            if (_isSuperadmin) const Tab(icon: Icon(Icons.business, size: 18), text: 'Companies'),
             if (_isFullAdmin) const Tab(icon: Icon(Icons.settings, size: 18), text: 'Settings'),
             if (_isFullAdmin) const Tab(icon: Icon(Icons.download, size: 18), text: 'Downloads'),
             const Tab(icon: Icon(Icons.cable, size: 18), text: 'Bridges'),
@@ -1961,12 +2195,431 @@ class _AdminScreenState extends State<AdminScreen> with SingleTickerProviderStat
           _buildUsersTab(),
           _buildGroupsTab(),
           _buildPermissionsTab(),
+          if (_isSuperadmin) _buildCompaniesTab(),
           if (_isFullAdmin) _buildSettingsTab(),
           if (_isFullAdmin) _buildDownloadsTab(),
           _buildBridgesTab(),
         ],
       ),
     );
+  }
+
+  Widget _buildCompanySelector() {
+    return Container(
+      height: 36,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        color: AppColors.surface,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppColors.border),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<int?>(
+          value: _selectedCompanyId,
+          isDense: true,
+          hint: const Text('All companies', style: TextStyle(fontSize: 13)),
+          items: [
+            const DropdownMenuItem<int?>(
+              value: null,
+              child: Text('All companies', style: TextStyle(fontSize: 13)),
+            ),
+            ..._companies.map((c) {
+              final id = c['id'] as int;
+              final name = (c['name'] ?? 'Company $id').toString();
+              return DropdownMenuItem<int?>(
+                value: id,
+                child: Text(name, style: const TextStyle(fontSize: 13)),
+              );
+            }),
+          ],
+          onChanged: (v) => _onCompanySelected(v),
+        ),
+      ),
+    );
+  }
+
+  String? _companyLogoAbsoluteUrl(dynamic logoUrl) {
+    if (logoUrl == null) return null;
+    final s = logoUrl.toString().trim();
+    if (s.isEmpty) return null;
+    if (s.startsWith('http://') || s.startsWith('https://')) return s;
+    final base = api.baseUrl.endsWith('/')
+        ? api.baseUrl.substring(0, api.baseUrl.length - 1)
+        : api.baseUrl;
+    return s.startsWith('/') ? '$base$s' : '$base/$s';
+  }
+
+  Widget _companyLogoAvatar(Map<String, dynamic> c, {double size = 40}) {
+    final url = _companyLogoAbsoluteUrl(c['logo_url']);
+    final active = c['active'] != 0 && c['active'] != false;
+    if (url == null) {
+      return CircleAvatar(
+        radius: size / 2,
+        backgroundColor: active ? Colors.teal.withValues(alpha: 0.2) : Colors.grey.shade800,
+        child: Icon(Icons.business, color: active ? Colors.teal : Colors.grey, size: size * 0.55),
+      );
+    }
+    return CircleAvatar(
+      radius: size / 2,
+      backgroundColor: Colors.black26,
+      backgroundImage: NetworkImage(url),
+      onBackgroundImageError: (_, __) {},
+    );
+  }
+
+  // ======================== COMPANIES TAB (superadmin) ========================
+
+  Widget _buildCompaniesTab() {
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+          child: Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'Companies',
+                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600),
+                ),
+              ),
+if (_isSuperadmin)
+                Padding(
+                  padding: const EdgeInsets.only(right: 8),
+                  child: Text(
+                    'SuperAdmins: créalos en Users (rol SuperAdmin, global)',
+                    style: TextStyle(fontSize: 11, color: Colors.orange.shade300),
+                  ),
+                ),
+              Text(
+                'Rename keeps the same id — users stay linked.',
+                style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+              ),
+              const SizedBox(width: 12),
+              ElevatedButton.icon(
+                onPressed: _showCreateCompanyDialog,
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('New company'),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 8),
+        Expanded(
+          child: _companies.isEmpty
+              ? Center(
+                  child: Text('No companies', style: TextStyle(color: Colors.grey.shade500)),
+                )
+              : ListView.separated(
+                  padding: const EdgeInsets.all(12),
+                  itemCount: _companies.length,
+                  separatorBuilder: (_, __) => const SizedBox(height: 8),
+                  itemBuilder: (ctx, i) {
+                    final c = Map<String, dynamic>.from(_companies[i] as Map);
+                    final rawId = c['id'];
+                    final id = rawId is int
+                        ? rawId
+                        : (rawId is num ? rawId.toInt() : int.tryParse('$rawId') ?? -1);
+                    if (id < 0) return const SizedBox.shrink();
+                    final active = c['active'] != 0 && c['active'] != false;
+                    final selected = _selectedCompanyId == id;
+                    return Card(
+                      color: selected
+                          ? Colors.blue.withValues(alpha: 0.12)
+                          : AppColors.surface,
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        side: BorderSide(
+                          color: selected ? Colors.blueAccent : AppColors.border,
+                          width: selected ? 1.5 : 1,
+                        ),
+                      ),
+                      child: ListTile(
+                        leading: _companyLogoAvatar(c),
+                        title: Text('${c['name']}  ·  id=$id'),
+                        subtitle: Text(
+                          'Users: ${c['user_count'] ?? 0} · Groups: ${c['group_count'] ?? 0}'
+                          '${c['slug'] != null && '${c['slug']}'.isNotEmpty ? ' · ${c['slug']}' : ''}'
+                          '${active ? '' : ' · inactive'}',
+                        ),
+                        trailing: Wrap(
+                          spacing: 6,
+                          crossAxisAlignment: WrapCrossAlignment.center,
+                          children: [
+                            // Select — pressed state is blue (user preference).
+                            Tooltip(
+                              message: selected ? 'Selected' : 'Select company',
+                              child: Material(
+                                color: selected ? Colors.blue : Colors.transparent,
+                                borderRadius: BorderRadius.circular(20),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(20),
+                                  onTap: () => _onCompanySelected(id),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                                    child: Row(
+                                      mainAxisSize: MainAxisSize.min,
+                                      children: [
+                                        Icon(
+                                          selected ? Icons.check_circle : Icons.radio_button_unchecked,
+                                          size: 18,
+                                          color: selected ? Colors.white : Colors.blueAccent,
+                                        ),
+                                        const SizedBox(width: 4),
+                                        Text(
+                                          selected ? 'Selected' : 'Select',
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            fontWeight: FontWeight.w600,
+                                            color: selected ? Colors.white : Colors.blueAccent,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            IconButton(
+                              tooltip: 'Edit name / logo',
+                              icon: const Icon(Icons.edit, size: 20),
+                              onPressed: () => _showEditCompanyDialog(c),
+                            ),
+                            if (id != 1)
+                              IconButton(
+                                tooltip: 'Delete',
+                                icon: const Icon(Icons.delete, size: 20, color: Colors.redAccent),
+                                onPressed: () => _confirmDeleteCompany(c),
+                              ),
+                          ],
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _showCreateCompanyDialog() async {
+    final nameCtrl = TextEditingController();
+    final slugCtrl = TextEditingController();
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('New company'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(controller: nameCtrl, decoration: const InputDecoration(labelText: 'Name')),
+            TextField(controller: slugCtrl, decoration: const InputDecoration(labelText: 'Slug (optional)')),
+            const SizedBox(height: 8),
+            Text(
+              'You can add a logo after creating the company (Edit).',
+              style: TextStyle(fontSize: 12, color: Colors.grey.shade500),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Create')),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    final name = nameCtrl.text.trim();
+    if (name.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('El nombre de la empresa es obligatorio')),
+        );
+      }
+      return;
+    }
+    try {
+      // SuperAdmin company APIs are global — don't send X-Company-Id filter.
+      final prev = api.companyId;
+      api.setCompanyId(null);
+      Map<String, dynamic> created;
+      try {
+        created = await api.createCompany({
+          'name': name,
+          if (slugCtrl.text.trim().isNotEmpty) 'slug': slugCtrl.text.trim(),
+        });
+      } finally {
+        api.setCompanyId(prev);
+      }
+      await _loadCompanies();
+      final rawId = created['id'];
+      final newId = rawId is int
+          ? rawId
+          : (rawId is num ? rawId.toInt() : int.tryParse('$rawId'));
+      if (newId != null) await _onCompanySelected(newId);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.green.shade800,
+            content: Text('Empresa "$name" creada (id=$newId)'),
+          ),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            backgroundColor: Colors.red.shade800,
+            content: Text('Error al crear empresa: $e'),
+            duration: const Duration(seconds: 6),
+          ),
+        );
+      }
+    }
+  }
+
+  Future<void> _showEditCompanyDialog(Map<String, dynamic> c) async {
+    final id = c['id'] as int;
+    final nameCtrl = TextEditingController(text: c['name']?.toString() ?? '');
+    final slugCtrl = TextEditingController(text: c['slug']?.toString() ?? '');
+    var active = c['active'] != 0 && c['active'] != false;
+    String? logoUrl = c['logo_url']?.toString();
+    String? pendingLogoDataUrl;
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setLocal) => AlertDialog(
+          title: Text('Edit company  ·  id=$id (fixed)'),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Logo preview + actions
+                Row(
+                  children: [
+                    _companyLogoAvatar({
+                      ...c,
+                      'logo_url': logoUrl,
+                      'active': active,
+                    }, size: 56),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          OutlinedButton.icon(
+                            icon: const Icon(Icons.image, size: 16),
+                            label: const Text('Choose logo'),
+                            onPressed: () async {
+                              final dataUrl = await pickCompanyLogoDataUrl();
+                              if (dataUrl == null || dataUrl.isEmpty) return;
+                              setLocal(() {
+                                pendingLogoDataUrl = dataUrl;
+                                logoUrl = dataUrl; // local preview
+                              });
+                            },
+                          ),
+                          if (logoUrl != null && logoUrl!.isNotEmpty)
+                            TextButton(
+                              onPressed: () => setLocal(() {
+                                pendingLogoDataUrl = '';
+                                logoUrl = null;
+                              }),
+                              child: const Text('Remove logo', style: TextStyle(fontSize: 12)),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                TextField(
+                  controller: nameCtrl,
+                  decoration: const InputDecoration(
+                    labelText: 'Name',
+                    helperText: 'Renaming does not change id or users',
+                  ),
+                ),
+                TextField(controller: slugCtrl, decoration: const InputDecoration(labelText: 'Slug')),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('Active'),
+                  value: active,
+                  onChanged: (v) => setLocal(() => active = v),
+                ),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    'Numeric id stays $id. All users with company_id=$id remain linked.',
+                    style: TextStyle(fontSize: 11, color: Colors.grey.shade500),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (ok != true) return;
+    try {
+      // 1) Rename / flags — never sends a new id.
+      await api.updateCompany(id, {
+        'name': nameCtrl.text.trim(),
+        'slug': slugCtrl.text.trim(),
+        'active': active,
+      });
+      // 2) Logo changes
+      if (pendingLogoDataUrl == '') {
+        await api.deleteCompanyLogo(id);
+      } else if (pendingLogoDataUrl != null && pendingLogoDataUrl!.isNotEmpty) {
+        await api.uploadCompanyLogo(id, pendingLogoDataUrl!);
+      }
+      await _loadCompanies();
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Company id=$id updated (users preserved)')),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    }
+  }
+
+  Future<void> _confirmDeleteCompany(Map<String, dynamic> c) async {
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete company'),
+        content: Text('Delete "${c['name']}" (id=${c['id']})? Must be empty (no users/groups).'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+    if (ok != true) return;
+    try {
+      await api.deleteCompany(c['id'] as int);
+      if (_selectedCompanyId == c['id']) await _onCompanySelected(1);
+      await _loadCompanies();
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('Error: $e')));
+      }
+    }
   }
 
   // ======================== SETTINGS TAB ========================
@@ -2738,11 +3391,24 @@ class _DanteMatrixState extends State<_DanteMatrix> {
   static const double labelWidth = 110;
   static const double headerHeight = 90;
 
+  final ScrollController _hCtrl = ScrollController();
+  final ScrollController _vCtrl = ScrollController();
+
   @override
+  void dispose() {
+    _hCtrl.dispose();
+    _vCtrl.dispose();
+    super.dispose();
+  }
+
+@override
   Widget build(BuildContext context) {
     final rowItems = widget.rowItems;
     final colItems = widget.colItems;
+    final contentWidth = labelWidth + (colItems.length * cellSize) + 2;
 
+    // Always-visible dual scrollbars so wide matrices are reachable on web.
+    // Outer horizontal scroll; inner vertical scroll constrained to viewport.
     return MouseRegion(
       onExit: (_) => setState(() { _hoverRow = -1; _hoverCol = -1; }),
       child: Container(
@@ -2751,36 +3417,60 @@ class _DanteMatrixState extends State<_DanteMatrix> {
           borderRadius: BorderRadius.circular(8),
           border: Border.all(color: _border, width: 1),
         ),
-        clipBehavior: Clip.antiAlias,
-        child: SizedBox(
-          height: headerHeight + (rowItems.length * cellSize) + 2,
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: SizedBox(
-              width: labelWidth + (colItems.length * cellSize) + 2,
-              child: CustomScrollView(
-                slivers: [
-                  SliverPersistentHeader(
-                    pinned: true,
-                    delegate: _MatrixHeaderDelegate(
-                      height: headerHeight,
-                      labelWidth: labelWidth,
-                      cellSize: cellSize,
-                      colItems: colItems,
-                      colLabel: widget.colLabel,
-                      highlightCol: _hoverCol,
+        clipBehavior: Clip.hardEdge,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            return Scrollbar(
+              controller: _hCtrl,
+              thumbVisibility: true,
+              trackVisibility: true,
+              scrollbarOrientation: ScrollbarOrientation.bottom,
+              notificationPredicate: (n) => n.metrics.axis == Axis.horizontal,
+              child: SingleChildScrollView(
+                controller: _hCtrl,
+                scrollDirection: Axis.horizontal,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(
+                    minWidth: contentWidth,
+                    maxHeight: constraints.maxHeight,
+                  ),
+                  child: SizedBox(
+                    width: contentWidth,
+                    height: constraints.maxHeight,
+                    child: Scrollbar(
+                      controller: _vCtrl,
+                      thumbVisibility: true,
+                      trackVisibility: true,
+                      scrollbarOrientation: ScrollbarOrientation.right,
+                      notificationPredicate: (n) => n.metrics.axis == Axis.vertical,
+                      child: CustomScrollView(
+                        controller: _vCtrl,
+                        slivers: [
+                          SliverPersistentHeader(
+                            pinned: true,
+                            delegate: _MatrixHeaderDelegate(
+                              height: headerHeight,
+                              labelWidth: labelWidth,
+                              cellSize: cellSize,
+                              colItems: colItems,
+                              colLabel: widget.colLabel,
+                              highlightCol: _hoverCol,
+                            ),
+                          ),
+                          SliverList(
+                            delegate: SliverChildBuilderDelegate(
+                              (context, idx) => _buildRow(idx),
+                              childCount: rowItems.length,
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
                   ),
-                  SliverList(
-                    delegate: SliverChildBuilderDelegate(
-                      (context, idx) => _buildRow(idx),
-                      childCount: rowItems.length,
-                    ),
-                  ),
-                ],
+                ),
               ),
-            ),
-          ),
+            );
+          },
         ),
       ),
     );

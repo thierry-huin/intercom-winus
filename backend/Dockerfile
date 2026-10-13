@@ -1,4 +1,5 @@
-FROM node:20-bookworm-slim
+# Node 22 required for npm@12 (EBADENGINE on Node 20).
+FROM node:22-bookworm-slim
 
 # mediasoup needs python3, make, g++ to compile its C++ worker.
 # openssl + the docker CLI + the compose plugin are required by
@@ -13,7 +14,7 @@ FROM node:20-bookworm-slim
 ARG DOCKER_VERSION=26.1.4
 ARG DOCKER_COMPOSE_VERSION=2.27.1
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 build-essential libopus-dev \
+    python3 python3-pip python3-venv build-essential libopus-dev \
     openssl ca-certificates curl \
     && rm -rf /var/lib/apt/lists/* \
     && curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_VERSION}.tgz" \
@@ -29,8 +30,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Keep npm current inside the image (mediasoup/postinstall + cleaner installs).
+RUN npm install -g npm@12
+
 COPY package*.json ./
-RUN npm install --production
+RUN npm install --omit=dev
 
 COPY src/ ./src/
 RUN mkdir -p /app/db

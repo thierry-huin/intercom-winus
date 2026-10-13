@@ -70,8 +70,12 @@ tr:hover td {
 }
 
 /* ========== Permission Matrix — Dante style ========== */
+.matrix-container {
+  border-color: var(--border);
+}
+
 .matrix-container table {
-  border: 1px solid var(--border);
+  border: none;
 }
 
 .matrix-container th {
@@ -82,10 +86,22 @@ tr:hover td {
   border-right: 1px solid var(--border);
 }
 
+.matrix-container th:first-child {
+  background: #1c2128;
+}
+
 .matrix-container td {
   padding: 0.3rem;
   border-right: 1px solid #21262d;
   border-bottom: 1px solid #21262d;
+}
+
+.matrix-container td:first-child {
+  background: var(--card-bg);
+}
+
+.matrix-container tr:hover td:first-child {
+  background: #1c2128;
 }
 
 .matrix-container .self-cell {

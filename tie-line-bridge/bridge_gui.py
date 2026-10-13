@@ -14,7 +14,7 @@ import ssl
 import sys
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import filedialog, messagebox
 
 import aiohttp
 import customtkinter as ctk
@@ -407,9 +407,9 @@ class ChannelRow:
             # Grey out meter backgrounds when not connected
             self.send_meter_canvas.itemconfig(self.send_meter_bg, fill="#333344", outline="#444455")
             self.recv_meter_canvas.itemconfig(self.recv_meter_bg, fill="#333344", outline="#444455")
-            self.vox_send_badge.configure(text="")
-            self.vox_recv_badge.configure(text="")
-            self.rx_badge.configure(text="")
+            self.vox_send_badge.configure(text="tx", text_color=COLOR_DIM)
+            self.vox_recv_badge.configure(text="rv", text_color=COLOR_DIM)
+            self.rx_badge.configure(text="rx", text_color=COLOR_DIM)
             if ch and ch.error:
                 self.status_dot.configure(text_color=COLOR_RED)
             return
@@ -433,18 +433,27 @@ class ChannelRow:
         self.recv_meter_canvas.coords(self.recv_meter_bar, 0, 1, recv_w, 15)
         self.recv_meter_canvas.itemconfig(self.recv_meter_bar, fill=recv_color)
 
-        # Badges
+        # Badges — always show a short legend so the 3 boxes are not blank
         if ch.vox_send_enabled:
-            self.vox_send_badge.configure(text="TX" if ch.vox_send_active else "")
+            self.vox_send_badge.configure(
+                text="TX" if ch.vox_send_active else "tx",
+                text_color=COLOR_RED if ch.vox_send_active else COLOR_DIM,
+            )
         else:
-            self.vox_send_badge.configure(text="ON")  # permanent PTT indicator
+            self.vox_send_badge.configure(text="ON", text_color=COLOR_GREEN)  # permanent PTT
 
         if ch.vox_recv_enabled:
-            self.vox_recv_badge.configure(text="RV" if ch.vox_recv_active else "")
+            self.vox_recv_badge.configure(
+                text="RV" if ch.vox_recv_active else "rv",
+                text_color=COLOR_ORANGE if ch.vox_recv_active else COLOR_DIM,
+            )
         else:
-            self.vox_recv_badge.configure(text="")
+            self.vox_recv_badge.configure(text="—", text_color=COLOR_DIM)
 
-        self.rx_badge.configure(text="RX" if ch.receiving else "")
+        self.rx_badge.configure(
+            text="RX" if ch.receiving else "rx",
+            text_color=COLOR_ACCENT2 if ch.receiving else COLOR_DIM,
+        )
 
     def set_devices(self, inputs: list, outputs: list):
         """Update per-channel device dropdowns."""
@@ -552,6 +561,12 @@ class BridgeApp:
         self._admin_authenticated = False  # Gate: must login before connecting
         self._admin_token: str | None = None
         self._admin_creds: tuple | None = None
+        self._admin_company_id = None  # active company for this session
+        self._admin_company_name = ""
+        # Per-company channel banks (independent, up to 32 each).
+        # Key = str(company_id). Value = dict with channels/total/bank/devices.
+        self._by_company: dict = {}
+        self._login_companies: list = []  # [{id, name, ...}] from GET /api/auth/companies
         self._bridge_status_timer = None
 
         # ---- Channel paging ----
@@ -594,7 +609,7 @@ class BridgeApp:
                      font=("SF Pro Display", 22, "bold"),
                      text_color="white").pack(side="left", padx=4, pady=8)
 
-        ctk.CTkLabel(header, text="Audio Matrix Bridge v3.5.0",
+        ctk.CTkLabel(header, text="Audio Matrix Bridge v3.8.2 · MME/WASAPI filter",
                      font=("SF Pro Display", 13),
                      text_color=COLOR_DIM).pack(side="left", padx=8, pady=8)
 
@@ -636,10 +651,22 @@ class BridgeApp:
                       text_color="#1a1a2e",
                       command=self._fetch_directory).pack(side="right", padx=4)
 
-        ctk.CTkButton(row1, text="🔒 Login", width=100, height=32,
-                      fg_color=COLOR_ORANGE, hover_color="#ff8f00",
-                      text_color="#1a1a2e",
-                      command=self._show_login_dialog).pack(side="right", padx=4)
+        # Login LED + button — LED goes green and the button flips to
+        # "✓ Logged in" once admin auth succeeds (see _update_auth_state).
+        self._login_led = ctk.CTkLabel(
+            row1, text="●", font=("Arial", 28),
+            text_color=COLOR_DIM, width=28,
+        )
+        self._login_led.pack(side="right", padx=(0, 2))
+
+        self.login_btn = ctk.CTkButton(
+            row1, text="🔒 Login", width=130, height=32,
+            font=("SF Pro Display", 13, "bold"),
+            fg_color=COLOR_ORANGE, hover_color="#ff8f00",
+            text_color="#1a1a2e",
+            command=self._show_login_dialog,
+        )
+        self.login_btn.pack(side="right", padx=4)
 
         ctk.CTkButton(row1, text="↻ Devices", width=100, height=32,
                       fg_color=COLOR_ACCENT, hover_color="#6a1fd6",
@@ -648,6 +675,14 @@ class BridgeApp:
         ctk.CTkButton(row1, text="🗑 Reset", width=90, height=32,
                       fg_color=COLOR_RED, hover_color="#d32f2f",
                       command=self._reset_config).pack(side="right", padx=4)
+
+        ctk.CTkButton(row1, text="📂 Load", width=90, height=32,
+                      fg_color="#455a64", hover_color="#37474f",
+                      command=self._load_config_dialog).pack(side="right", padx=4)
+
+        ctk.CTkButton(row1, text="💾 Save", width=90, height=32,
+                      fg_color="#2e7d32", hover_color="#1b5e20",
+                      command=self._save_config_dialog).pack(side="right", padx=4)
 
         # Row 2: Default devices (fill-all) — aligned with per-channel columns
         row2 = ctk.CTkFrame(config_frame, fg_color="transparent")
@@ -684,6 +719,24 @@ class BridgeApp:
                       font=("SF Pro Display", 12, "bold"),
                       fg_color=COLOR_BLUE, hover_color="#1976d2",
                       command=self._apply_defaults_to_all).pack(side="left", padx=(12, 4))
+
+        # ---- Windows audio API filter (MME / WASAPI / Both / All) ----
+        # PortAudio lists the same Dante Virtual Soundcard under several
+        # host APIs; this filter keeps the dropdown usable while still
+        # allowing WASAPI when MME is not preferred.
+        ctk.CTkLabel(row2, text="  Audio API", font=("SF Pro Display", 12),
+                     text_color=COLOR_DIM).pack(side="left", padx=(16, 4))
+        # Default MME on Windows (short DVS names that work in practice),
+        # All elsewhere (CoreAudio / ALSA / JACK — no MME/WASAPI split).
+        default_api = "MME" if sys.platform.startswith("win") else "All"
+        self.audio_api_var = tk.StringVar(value=default_api)
+        self.audio_api_combo = ctk.CTkComboBox(
+            row2, variable=self.audio_api_var,
+            values=["MME", "WASAPI", "Both", "All"],
+            width=100, height=32, state="readonly",
+            command=lambda _v: self._on_audio_api_changed(),
+        )
+        self.audio_api_combo.pack(side="left", padx=4)
 
         # ---- Total channel count (8 / 16 / 24 / 32) ----
         ctk.CTkLabel(row2, text="  Total channels", font=("SF Pro Display", 12),
@@ -741,13 +794,13 @@ class BridgeApp:
             ("ch", 30, 1),
             ("VOX→", 50, 2),
             ("dB", 58, 2),
-            ("TX", 40, 2),
-            ("", 30, 1),
+            ("niv", 40, 2),   # send level meter
+            ("tx", 30, 1),    # VOX send / permanent PTT legend box
             ("VOX←", 50, 2),
             ("dB", 58, 2),
-            ("RX", 40, 2),
-            ("", 30, 1),
-            ("", 24, 1),
+            ("niv", 40, 2),   # recv level meter
+            ("rv", 30, 1),    # VOX recv legend box
+            ("rx", 24, 1),    # incoming RX legend box
             ("", 30, (2, 8)),
         ]
         for col, (text, w, px) in enumerate(headers):
@@ -778,6 +831,20 @@ class BridgeApp:
                                           font=("SF Pro Display", 12),
                                           text_color=COLOR_DIM)
         self.status_label.pack(side="left", padx=12, pady=4)
+
+        # Persistent session badge (right side of status bar).
+        self._auth_status_var = tk.StringVar(value="● No logueado")
+        self._auth_status_label = ctk.CTkLabel(
+            status_frame, textvariable=self._auth_status_var,
+            font=("SF Pro Display", 12, "bold"),
+            text_color=COLOR_ORANGE,
+        )
+        self._auth_status_label.pack(side="right", padx=(8, 12), pady=4)
+
+        self._company_status_var = tk.StringVar(value="Empresa: —")
+        ctk.CTkLabel(status_frame, textvariable=self._company_status_var,
+                     font=("SF Pro Display", 12, "bold"),
+                     text_color=COLOR_ACCENT2).pack(side="right", padx=12, pady=4)
 
     # ======================== CHANNEL PAGING ========================
 
@@ -933,20 +1000,102 @@ class BridgeApp:
             self._server_status.configure(text_color=COLOR_RED)
             self.status_var.set(f"✗ Server no alcanzable: {error}")
 
-    def _refresh_devices(self):
+    @staticmethod
+    def _hostapi_kind(hostapi_name: str) -> str:
+        """Normalize PortAudio host API name → MME | WASAPI | OTHER."""
+        n = (hostapi_name or "").lower()
+        if "wasapi" in n:
+            return "WASAPI"
+        if n.strip() == "mme" or n.startswith("mme") or " mme" in f" {n}":
+            return "MME"
+        # Some builds report just "MME" / "Windows MME"
+        if "mme" in n and "wasapi" not in n:
+            return "MME"
+        return "OTHER"
+
+    @staticmethod
+    def _hostapi_short_tag(hostapi_name: str) -> str:
+        kind = BridgeApp._hostapi_kind(hostapi_name)
+        if kind in ("MME", "WASAPI"):
+            return kind
+        # Keep a short readable tag for DirectSound / WDM-KS / Core Audio…
+        n = (hostapi_name or "?").strip()
+        if "directsound" in n.lower() or n.lower() == "dsound":
+            return "DS"
+        if "wdm" in n.lower() or "ks" == n.lower():
+            return "WDM-KS"
+        if "core" in n.lower():
+            return "CoreAudio"
+        if "alsa" in n.lower():
+            return "ALSA"
+        # Truncate long names
+        return n[:10] if n else "?"
+
+    def _device_passes_api_filter(self, hostapi_name: str) -> bool:
+        mode = (self.audio_api_var.get() if hasattr(self, "audio_api_var") else "All") or "All"
+        kind = self._hostapi_kind(hostapi_name)
+        if mode == "All":
+            return True
+        if mode == "Both":
+            return kind in ("MME", "WASAPI")
+        if mode == "MME":
+            return kind == "MME"
+        if mode == "WASAPI":
+            return kind == "WASAPI"
+        return True
+
+    def _on_audio_api_changed(self):
+        """Re-list devices when the MME/WASAPI filter changes."""
+        self._refresh_devices(preserve_selection=True)
+        self._save_config()
+
+    def _refresh_devices(self, preserve_selection: bool = False):
         try:
             devices = sd.query_devices()
+            hostapis = sd.query_hostapis()
         except Exception as e:
             messagebox.showerror("Error", f"Cannot list devices:\n{e}")
             return
 
+        prev_in = self.input_dev_var.get() if preserve_selection else ""
+        prev_out = self.output_dev_var.get() if preserve_selection else ""
+        # Also remember per-row selections when filtering
+        row_prev_in = []
+        row_prev_out = []
+        if preserve_selection:
+            for row in self.channel_rows:
+                row_prev_in.append(row.in_dev_var.get())
+                row_prev_out.append(row.out_dev_var.get())
+
         inputs = []
         outputs = []
         for i, d in enumerate(devices):
-            if d['max_input_channels'] > 0:
-                inputs.append(f"{i}: {d['name']} ({d['max_input_channels']}ch)")
-            if d['max_output_channels'] > 0:
-                outputs.append(f"{i}: {d['name']} ({d['max_output_channels']}ch)")
+            try:
+                ha_idx = int(d.get("hostapi", 0))
+                ha_name = hostapis[ha_idx]["name"] if ha_idx < len(hostapis) else "?"
+            except Exception:
+                ha_name = "?"
+            if not self._device_passes_api_filter(ha_name):
+                continue
+            tag = self._hostapi_short_tag(ha_name)
+            # Label includes API tag so Both/All stay unambiguous
+            # e.g. "1: DVS Receive 1-2 [MME] (2ch)"
+            if d["max_input_channels"] > 0:
+                inputs.append(
+                    f"{i}: {d['name']} [{tag}] ({d['max_input_channels']}ch)"
+                )
+            if d["max_output_channels"] > 0:
+                outputs.append(
+                    f"{i}: {d['name']} [{tag}] ({d['max_output_channels']}ch)"
+                )
+
+        # If filter emptied the list (e.g. MME on macOS), fall back to All once.
+        if not inputs and not outputs and self.audio_api_var.get() != "All":
+            self.status_var.set(
+                f"Audio API {self.audio_api_var.get()}: ningún device — mostrando All"
+            )
+            self.audio_api_var.set("All")
+            return self._refresh_devices(preserve_selection=preserve_selection)
 
         self.input_combo.configure(values=inputs)
         self.output_combo.configure(values=outputs)
@@ -956,29 +1105,44 @@ class BridgeApp:
         for row in self.channel_rows:
             row.set_devices(inputs, outputs)
 
-        for item in inputs:
-            try:
-                ch_count = int(item.rsplit("(", 1)[1].split("ch")[0])
-            except (IndexError, ValueError):
-                ch_count = 0
-            if ch_count > 2:
-                self.input_dev_var.set(item)
-                break
-        else:
-            if inputs:
-                self.input_dev_var.set(inputs[0])
+        def _pick(current: str, items: list[str], prefer_multi: bool) -> str:
+            if current and current in items:
+                return current
+            # Match by leading "id:" if the label changed (added [MME] tag)
+            if current:
+                try:
+                    cur_id = current.split(":", 1)[0].strip()
+                    for it in items:
+                        if it.split(":", 1)[0].strip() == cur_id:
+                            return it
+                except Exception:
+                    pass
+            if prefer_multi:
+                for item in items:
+                    try:
+                        ch_count = int(item.rsplit("(", 1)[1].split("ch")[0])
+                    except (IndexError, ValueError):
+                        ch_count = 0
+                    if ch_count > 2:
+                        return item
+            return items[0] if items else ""
 
-        for item in outputs:
-            try:
-                ch_count = int(item.rsplit("(", 1)[1].split("ch")[0])
-            except (IndexError, ValueError):
-                ch_count = 0
-            if ch_count > 2:
-                self.output_dev_var.set(item)
-                break
-        else:
-            if outputs:
-                self.output_dev_var.set(outputs[0])
+        self.input_dev_var.set(_pick(prev_in, inputs, prefer_multi=True))
+        self.output_dev_var.set(_pick(prev_out, outputs, prefer_multi=True))
+
+        if preserve_selection:
+            for row, pin, pout in zip(self.channel_rows, row_prev_in, row_prev_out):
+                if row.channel is not None:
+                    continue  # don't touch live channels' device strings
+                if pin:
+                    row.in_dev_var.set(_pick(pin, inputs, prefer_multi=False) or pin)
+                if pout:
+                    row.out_dev_var.set(_pick(pout, outputs, prefer_multi=False) or pout)
+
+        mode = self.audio_api_var.get()
+        self.status_var.set(
+            f"✓ Devices: {len(inputs)} in / {len(outputs)} out  (API filter: {mode})"
+        )
 
     def _get_device_id(self, combo_value: str) -> int:
         try:
@@ -1007,7 +1171,7 @@ class BridgeApp:
     # ======================== LOGIN & DOWNLOAD CONFIG ========================
 
     def _show_login_dialog(self):
-        """Show admin login dialog, then download bridge config + directory."""
+        """Show admin/superuser login: Empresa (dropdown) + Admin + Password."""
         server = self.server_var.get().strip()
         if not server:
             messagebox.showwarning("Login", "Enter the server URL first")
@@ -1015,45 +1179,230 @@ class BridgeApp:
 
         dialog = ctk.CTkToplevel(self.root)
         dialog.title("Admin Login")
-        dialog.geometry("340x260")
+        dialog.geometry("380x380")
         dialog.resizable(False, False)
         dialog.configure(fg_color=COLOR_CARD)
         dialog.transient(self.root)
         dialog.grab_set()
 
-        ctk.CTkLabel(dialog, text="Admin credentials", font=("SF Pro Display", 16, "bold"),
+        ctk.CTkLabel(dialog, text="Login multiempresa",
+                     font=("SF Pro Display", 16, "bold"),
                      text_color=COLOR_TEXT).pack(pady=(16, 4))
         ctk.CTkLabel(dialog, text=f"Server: {server}", font=("SF Pro Display", 11),
-                     text_color=COLOR_DIM).pack(pady=(0, 12))
+                     text_color=COLOR_DIM).pack(pady=(0, 8))
+        ctk.CTkLabel(
+            dialog,
+            text="1) Empresa   2) Admin   3) Password",
+            font=("SF Pro Display", 11),
+            text_color=COLOR_ACCENT2,
+        ).pack(pady=(0, 10))
 
+        # 1) Empresa — dropdown (loaded async from /api/auth/companies)
+        ctk.CTkLabel(dialog, text="Empresa", font=("SF Pro Display", 12),
+                     text_color=COLOR_DIM, anchor="w").pack(fill="x", padx=40)
+        company_var = tk.StringVar(value="Cargando empresas…")
+        company_combo = ctk.CTkComboBox(
+            dialog, variable=company_var, values=["Cargando empresas…"],
+            width=300, height=32, state="readonly",
+        )
+        company_combo.pack(pady=(2, 8))
+        # Map display label → company id
+        company_id_by_label: dict = {}
+
+        # 2) Admin
+        ctk.CTkLabel(dialog, text="Admin", font=("SF Pro Display", 12),
+                     text_color=COLOR_DIM, anchor="w").pack(fill="x", padx=40)
         user_var = tk.StringVar(value="admin")
-        pass_var = tk.StringVar()
+        user_entry = ctk.CTkEntry(dialog, textvariable=user_var, width=300, height=32,
+                                  placeholder_text="Admin / SuperUser")
+        user_entry.pack(pady=(2, 8))
 
-        ctk.CTkEntry(dialog, textvariable=user_var, width=260, height=32,
-                     placeholder_text="Username").pack(pady=4)
-        pass_entry = ctk.CTkEntry(dialog, textvariable=pass_var, width=260, height=32,
+        # 3) Password
+        ctk.CTkLabel(dialog, text="Password", font=("SF Pro Display", 12),
+                     text_color=COLOR_DIM, anchor="w").pack(fill="x", padx=40)
+        pass_var = tk.StringVar()
+        pass_entry = ctk.CTkEntry(dialog, textvariable=pass_var, width=300, height=32,
                                    placeholder_text="Password", show="\u2022")
-        pass_entry.pack(pady=4)
-        pass_entry.focus()
+        pass_entry.pack(pady=(2, 8))
 
         status_label = ctk.CTkLabel(dialog, text="", font=("SF Pro Display", 11),
                                       text_color=COLOR_RED)
         status_label.pack(pady=(4, 0))
 
+        def _on_companies_loaded(companies: list, err: str | None):
+            company_id_by_label.clear()
+            if err:
+                company_combo.configure(values=["(sin listado — login sin empresa)"], state="readonly")
+                company_var.set("(sin listado — login sin empresa)")
+                status_label.configure(
+                    text=f"Empresas: {err}. Puedes entrar si el usuario no necesita empresa.",
+                    text_color=COLOR_ORANGE,
+                )
+                pass_entry.focus()
+                return
+            labels = []
+            for c in companies:
+                if not isinstance(c, dict):
+                    continue
+                cid = c.get("id")
+                name = (c.get("name") or f"Empresa {cid}").strip()
+                label = f"{name}  (id={cid})"
+                labels.append(label)
+                company_id_by_label[label] = cid
+            self._login_companies = list(companies)
+            if not labels:
+                company_combo.configure(values=["(ninguna empresa)"], state="readonly")
+                company_var.set("(ninguna empresa)")
+            else:
+                company_combo.configure(values=labels, state="readonly")
+                # Prefer previously selected company if still present
+                preferred = None
+                if self._admin_company_id is not None:
+                    for lab, cid in company_id_by_label.items():
+                        if cid == self._admin_company_id:
+                            preferred = lab
+                            break
+                company_var.set(preferred or labels[0])
+            pass_entry.focus()
+
+        def _load_companies_bg():
+            import asyncio as _aio
+            loop = _aio.new_event_loop()
+            try:
+                cos = loop.run_until_complete(self._fetch_companies_async(server))
+                self.root.after(0, lambda: _on_companies_loaded(cos, None))
+            except Exception as e:
+                msg = str(e)
+                self.root.after(0, lambda m=msg: _on_companies_loaded([], m))
+            finally:
+                loop.close()
+
+        threading.Thread(target=_load_companies_bg, daemon=True).start()
+
         def do_login():
             u = user_var.get().strip()
             p = pass_var.get().strip()
+            lab = company_var.get().strip()
+            cid = company_id_by_label.get(lab)
             if not u or not p:
+                status_label.configure(text="Admin y password obligatorios", text_color=COLOR_RED)
                 return
+            if company_id_by_label and cid is None:
+                status_label.configure(text="Selecciona una empresa", text_color=COLOR_RED)
+                return
+            # Pass company_id as 3rd cred element (int or empty)
+            c_arg = "" if cid is None else str(cid)
             status_label.configure(text="Connecting...", text_color=COLOR_ORANGE)
-            threading.Thread(target=self._login_and_download, args=(server, (u, p), dialog, status_label), daemon=True).start()
+            threading.Thread(
+                target=self._login_and_download,
+                args=(server, (u, p, c_arg), dialog, status_label),
+                daemon=True,
+            ).start()
 
         pass_entry.bind("<Return>", lambda _: do_login())
-        ctk.CTkButton(dialog, text="Login & Download Config", width=260, height=36,
+        user_entry.bind("<Return>", lambda _: pass_entry.focus())
+        ctk.CTkButton(dialog, text="Login & Download Config", width=300, height=36,
                       font=("SF Pro Display", 13, "bold"),
                       fg_color=COLOR_GREEN, hover_color="#00c853",
                       text_color="#1a1a2e",
-                      command=do_login).pack(pady=(12, 8))
+                      command=do_login).pack(pady=(12, 12))
+
+    async def _fetch_companies_async(self, server: str) -> list:
+        """Public company list for the login dropdown."""
+        timeout = aiohttp.ClientTimeout(total=8)
+        conn = aiohttp.TCPConnector(ssl=False)
+        async with aiohttp.ClientSession(connector=conn, timeout=timeout) as session:
+            async with session.get(f"{server.rstrip('/')}/api/auth/companies") as resp:
+                if resp.status != 200:
+                    raise RuntimeError(f"HTTP {resp.status}")
+                data = await resp.json()
+                return data if isinstance(data, list) else []
+
+    def _company_key(self, company_id) -> str:
+        if company_id in (None, "", 0, "0"):
+            return "_none"
+        return str(company_id)
+
+    def _snapshot_current_company_bank(self) -> dict:
+        """Capture the in-memory 32-slot bank for the active company."""
+        self._stash_visible_into_data()
+        channels = []
+        for i in range(self._total_channels):
+            data = self._channel_data[i] or {}
+            if data:
+                d = dict(data)
+                d["index"] = i + 1
+                channels.append(d)
+        return {
+            "company_id": self._admin_company_id,
+            "company_name": self._admin_company_name or None,
+            "total_channels": self._total_channels,
+            "current_bank": self._current_bank,
+            "input_device": self.input_dev_var.get(),
+            "output_device": self.output_dev_var.get(),
+            "num_device_channels": int(self.num_ch_var.get() or "16"),
+            "channels": channels,
+        }
+
+    def _store_active_company_bank(self):
+        """Persist current UI bank into _by_company under the active company key."""
+        key = self._company_key(self._admin_company_id)
+        self._by_company[key] = self._snapshot_current_company_bank()
+
+    def _load_company_bank_into_ui(self, bank: dict | None):
+        """Replace visible channel bank with a per-company snapshot (or empty)."""
+        # Clear all 32 slots first
+        self._channel_data = [{} for _ in range(32)]
+        self._channels_running = [None] * 32
+        bank = bank or {}
+        total = bank.get("total_channels", 16)
+        if total not in (8, 16, 24, 32):
+            total = 16
+        self._total_channels = total
+        self._total_var.set(str(total))
+        if bank.get("input_device"):
+            self.input_dev_var.set(bank.get("input_device"))
+        if bank.get("output_device"):
+            self.output_dev_var.set(bank.get("output_device"))
+        if bank.get("num_device_channels"):
+            self.num_ch_var.set(str(bank.get("num_device_channels")))
+        for ch_cfg in bank.get("channels", []) or []:
+            try:
+                idx = int(ch_cfg.get("index", 0)) - 1
+            except (TypeError, ValueError):
+                continue
+            if 0 <= idx < 32:
+                self._channel_data[idx] = dict(ch_cfg)
+        bank_i = int(bank.get("current_bank", 0) or 0)
+        max_bank = self._bank_count() - 1
+        self._current_bank = max(0, min(bank_i, max_bank))
+        self._load_visible_from_data()
+        self._refresh_bank_indicators()
+
+    def _switch_to_company(self, company_id, company_name: str = ""):
+        """Save current company bank, then load the target company's independent bank."""
+        # Refuse switch while channels are live — independent banks must not mix sessions.
+        if any(ch is not None for ch in self._channels_running) or self.channels:
+            messagebox.showwarning(
+                "Empresa",
+                "Desconecta todos los canales antes de cambiar de empresa.\n"
+                "Cada empresa tiene hasta 32 conexiones independientes.",
+            )
+            return False
+        # Stash previous company bank (if we had one)
+        if self._admin_company_id is not None or any(self._channel_data):
+            self._store_active_company_bank()
+        self._admin_company_id = company_id
+        self._admin_company_name = company_name or ""
+        key = self._company_key(company_id)
+        bank = self._by_company.get(key)
+        self._load_company_bank_into_ui(bank)
+        co = self._admin_company_name or (
+            f"id={self._admin_company_id}" if self._admin_company_id is not None else "—"
+        )
+        if hasattr(self, "_company_status_var"):
+            self._company_status_var.set(f"Empresa: {co}")
+        return True
 
     def _login_and_download(self, server: str, creds: tuple, dialog, status_label):
         """Background: authenticate admin, then download config. Close dialog only on success."""
@@ -1063,19 +1412,55 @@ class BridgeApp:
             result = loop.run_until_complete(self._download_config_async(server, creds))
             if result:
                 self._admin_authenticated = True
-                self.root.after(0, dialog.destroy)
-                self.root.after(0, self._apply_server_config, result)
-                self.root.after(0, self._update_auth_state)
+
+                def _after_login():
+                    dialog.destroy()
+                    # Resolve company from login (creds[2] is company_id string)
+                    cid = self._admin_company_id
+                    cname = self._admin_company_name or ""
+                    if len(creds) > 2 and creds[2]:
+                        try:
+                            cid = int(str(creds[2]).strip())
+                        except ValueError:
+                            pass
+                    # Switch bank BEFORE applying server config so each company
+                    # keeps its own 32 slots independent.
+                    if not self._switch_to_company(cid, cname):
+                        # Switch blocked (live channels) — still apply auth
+                        self._admin_company_id = cid
+                        self._admin_company_name = cname
+                    self._apply_server_config(result)
+                    self._update_auth_state()
+                    self._save_config()
+                    who = (self._admin_creds[0] if self._admin_creds else "admin")
+                    co = self._admin_company_name or (
+                        f"id={self._admin_company_id}"
+                        if self._admin_company_id is not None else ""
+                    )
+                    msg_ok = f"✓ Sesión activa: {who}" + (f" · {co}" if co else "")
+                    self.status_var.set(msg_ok)
+
+                self.root.after(0, _after_login)
         except Exception as e:
             self._admin_authenticated = False
+            self._admin_token = None
             msg = str(e)
             self.root.after(0, lambda: status_label.configure(text=f"\u2717 {msg}", text_color=COLOR_RED))
             self.root.after(0, lambda: self.status_var.set(f"Login failed: {msg}"))
+            self.root.after(0, self._update_auth_state)
         finally:
             loop.close()
 
     def _update_auth_state(self):
-        """Enable/disable connect buttons based on auth state."""
+        """Enable/disable connect buttons and show a clear logged-in indicator.
+
+        Visual contract (must be obvious from across the room):
+          - NOT logged in: orange 🔒 Login button, dim LED, "● No logueado"
+          - Logged in:     green ✓ Logged in button, bright green LED,
+                           "● Logueado: user · empresa"
+        Clicking the green button still opens the login dialog so the
+        operator can switch company / re-auth without hunting for a menu.
+        """
         for row in self.channel_rows:
             if self._admin_authenticated:
                 row.ch_connect_btn.configure(state="normal")
@@ -1083,17 +1468,99 @@ class BridgeApp:
                 row.ch_connect_btn.configure(state="disabled")
         self.connect_btn.configure(state="normal" if self._admin_authenticated else "disabled")
 
+        if not hasattr(self, "login_btn"):
+            return
+
+        if self._admin_authenticated and self._admin_token:
+            user = ""
+            if self._admin_creds and len(self._admin_creds) > 0:
+                user = str(self._admin_creds[0] or "").strip()
+            company = (self._admin_company_name or "").strip()
+            if not company and self._admin_company_id is not None:
+                company = f"id={self._admin_company_id}"
+
+            # Button: green + check, still clickable to re-login
+            btn_label = "✓ Logged in"
+            if user:
+                # Keep button readable — truncate long usernames
+                short = user if len(user) <= 12 else user[:11] + "…"
+                btn_label = f"✓ {short}"
+            self.login_btn.configure(
+                text=btn_label,
+                fg_color=COLOR_GREEN,
+                hover_color="#00c853",
+                text_color="#1a1a2e",
+            )
+            self._login_led.configure(text_color=COLOR_GREEN)
+
+            badge = "● Logueado"
+            if user:
+                badge += f": {user}"
+            if company:
+                badge += f" · {company}"
+            self._auth_status_var.set(badge)
+            if hasattr(self, "_auth_status_label"):
+                self._auth_status_label.configure(text_color=COLOR_GREEN)
+        else:
+            self.login_btn.configure(
+                text="🔒 Login",
+                fg_color=COLOR_ORANGE,
+                hover_color="#ff8f00",
+                text_color="#1a1a2e",
+            )
+            self._login_led.configure(text_color=COLOR_DIM)
+            self._auth_status_var.set("● No logueado")
+            if hasattr(self, "_auth_status_label"):
+                self._auth_status_label.configure(text_color=COLOR_ORANGE)
+
+
+    def _admin_auth_headers(self, token: str | None = None) -> dict:
+        """Bearer + optional X-Company-Id so admin APIs are company-scoped."""
+        tok = token if token is not None else self._admin_token
+        h = {"Authorization": f"Bearer {tok}"} if tok else {}
+        if self._admin_company_id is not None:
+            h["X-Company-Id"] = str(self._admin_company_id)
+        return h
+
     async def _download_config_async(self, server: str, creds: tuple):
         timeout = aiohttp.ClientTimeout(total=10)
         conn = aiohttp.TCPConnector(ssl=False)
         async with aiohttp.ClientSession(connector=conn, timeout=timeout) as session:
             # Login as admin (bridge users may not have admin access)
-            async with session.post(f"{server}/api/auth/login",
-                                    json={"username": creds[0], "password": creds[1]}) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"Login failed: {resp.status}")
+            login_body = {"username": creds[0], "password": creds[1]}
+            if len(creds) > 2 and creds[2]:
+                c = str(creds[2]).strip()
+                try:
+                    login_body["company_id"] = int(c)
+                except ValueError:
+                    login_body["company"] = c
+            async with session.post(f"{server}/api/auth/login", json=login_body) as resp:
                 data = await resp.json()
+                if resp.status == 409 and data.get("code") == "COMPANY_REQUIRED":
+                    cos = data.get("companies") or []
+                    names = ", ".join(str(x.get("company_name") or x.get("company_id")) for x in cos)
+                    raise RuntimeError(f"Elige empresa en el dropdown: {names}")
+                if resp.status != 200:
+                    raise RuntimeError(data.get("error") or f"Login failed: {resp.status}")
                 token = data["token"]
+                u = data.get("user") or {}
+                # Prefer company chosen in the login dropdown; fall back to JWT user.
+                chosen_cid = None
+                if len(creds) > 2 and creds[2]:
+                    try:
+                        chosen_cid = int(str(creds[2]).strip())
+                    except ValueError:
+                        chosen_cid = None
+                self._admin_company_id = chosen_cid if chosen_cid is not None else u.get("company_id")
+                self._admin_company_name = (
+                    u.get("company_name") or u.get("company") or ""
+                )
+                # Resolve name from cached company list if login user has no company_name
+                if not self._admin_company_name and self._admin_company_id is not None:
+                    for c0 in self._login_companies:
+                        if isinstance(c0, dict) and c0.get("id") == self._admin_company_id:
+                            self._admin_company_name = c0.get("name") or ""
+                            break
             # Cache the admin token + creds so the bridge-status poller can
             # keep refreshing without prompting the user for a password
             # again. Tokens are short-lived; if they expire, we fall back
@@ -1102,8 +1569,9 @@ class BridgeApp:
             self._admin_creds = creds
             self.root.after(0, self._start_bridge_status_polling)
             # Fetch bridge config
+            hdrs = self._admin_auth_headers(token)
             async with session.get(f"{server}/api/admin/bridge-config",
-                                   headers={"Authorization": f"Bearer {token}"}) as resp:
+                                   headers=hdrs) as resp:
                 if resp.status != 200:
                     raise RuntimeError(f"Bridge config: HTTP {resp.status}")
                 return await resp.json()
@@ -1158,19 +1626,30 @@ class BridgeApp:
         timeout = aiohttp.ClientTimeout(total=8)
         conn = aiohttp.TCPConnector(ssl=False)
         async with aiohttp.ClientSession(connector=conn, timeout=timeout) as session:
-            async with session.post(f"{server}/api/auth/login",
-                                    json={"username": creds[0], "password": creds[1]}) as resp:
-                if resp.status != 200:
-                    raise RuntimeError(f"Re-login failed: HTTP {resp.status}")
+            login_body = {"username": creds[0], "password": creds[1]}
+            if len(creds) > 2 and creds[2]:
+                c = str(creds[2]).strip()
+                try:
+                    login_body["company_id"] = int(c)
+                except ValueError:
+                    login_body["company"] = c
+            elif getattr(self, "_admin_company_id", None) is not None:
+                login_body["company_id"] = self._admin_company_id
+            async with session.post(f"{server}/api/auth/login", json=login_body) as resp:
                 data = await resp.json()
+                if resp.status != 200:
+                    raise RuntimeError(data.get("error") or f"Re-login failed: HTTP {resp.status}")
                 return data["token"]
 
     async def _fetch_bridge_status_async(self, server: str, token: str):
         timeout = aiohttp.ClientTimeout(total=8)
         conn = aiohttp.TCPConnector(ssl=False)
         async with aiohttp.ClientSession(connector=conn, timeout=timeout) as session:
+            hdrs = {"Authorization": f"Bearer {token}"}
+            if self._admin_company_id is not None:
+                hdrs["X-Company-Id"] = str(self._admin_company_id)
             async with session.get(f"{server}/api/admin/bridge-status",
-                                   headers={"Authorization": f"Bearer {token}"}) as resp:
+                                   headers=hdrs) as resp:
                 if resp.status != 200:
                     raise RuntimeError(f"bridge-status: HTTP {resp.status}")
                 return await resp.json()
@@ -1192,33 +1671,47 @@ class BridgeApp:
             row.set_external_in_use(in_use)
 
     def _apply_server_config(self, config: dict):
-        """Apply downloaded server config to channel rows."""
+        """Apply downloaded server config to all channel slots (not only bank 1)."""
         channels = config.get("channels", [])
         count = 0
+        # Grow total channels if server sent more than current page size
+        max_idx = 0
+        for ch in channels:
+            try:
+                max_idx = max(max_idx, int(ch.get("index", 0)))
+            except (TypeError, ValueError):
+                pass
+        if max_idx > self._total_channels:
+            for t in (8, 16, 24, 32):
+                if max_idx <= t:
+                    self._total_channels = t
+                    self._total_var.set(str(t))
+                    break
         for ch in channels:
             idx = ch.get("index", 0) - 1
-            if 0 <= idx < len(self.channel_rows):
-                row = self.channel_rows[idx]
-                if row.channel is not None:
-                    continue  # Don't modify connected channels
-                row.user_var.set(ch.get("username", ""))
-                row.pass_var.set(ch.get("password", ""))
-                row.ttype_var.set(ch.get("target_type", "user"))
-                row._pending_target_id = ch.get("target_id", 0)
-                if ch.get("input_device"):
-                    row.in_dev_var.set(ch["input_device"])
-                if ch.get("output_device"):
-                    row.out_dev_var.set(ch["output_device"])
-                row.in_ch_var.set(str(ch.get("input_channel", idx + 1)))
-                row.out_ch_var.set(str(ch.get("output_channel", idx + 1)))
-                row._vox_send_enabled = ch.get("vox_send_enabled", False)
-                row.vox_send_db_var.set(str(ch.get("vox_send_threshold_db", -40)))
-                row._update_vox_send_visual()
-                row._vox_recv_enabled = ch.get("vox_recv_enabled", True)
-                row.vox_recv_db_var.set(str(ch.get("vox_recv_threshold_db", -40)))
-                row._update_vox_recv_visual()
-                count += 1
-        # Now fetch directory to resolve target names
+            if not (0 <= idx < 32):
+                continue
+            # Skip overwriting a slot that is live-connected
+            if self._channels_running[idx] is not None:
+                continue
+            data = dict(ch)
+            data["index"] = idx + 1
+            # Per-line company UI removed: use first channel company as global default
+            cid = data.get("company_id")
+            if self._admin_company_id is None and cid not in (None, "", 0, "0"):
+                try:
+                    self._admin_company_id = int(cid)
+                except (TypeError, ValueError):
+                    pass
+                self._admin_company_name = data.get("company_name") or data.get("company") or self._admin_company_name
+            # Drop per-channel company keys from local config (global session only)
+            data.pop("company_id", None)
+            data.pop("company", None)
+            data.pop("company_name", None)
+            self._channel_data[idx] = data
+            count += 1
+        self._load_visible_from_data()
+        # Directory resolves target names + company "Name (id)" legends
         self._fetch_directory()
         self._save_config()
         self.status_var.set(f"\u2713 Config downloaded: {count} channels configured")
@@ -1271,26 +1764,67 @@ class BridgeApp:
         timeout = aiohttp.ClientTimeout(total=10)
         conn = aiohttp.TCPConnector(ssl=False)
         async with aiohttp.ClientSession(connector=conn, timeout=timeout) as session:
-            async with session.post(f"{server}/api/auth/login",
-                                    json={"username": creds[0], "password": creds[1], "client_type": "bridge"}) as resp:
-                if resp.status != 200:
-                    body = await resp.text()
-                    raise RuntimeError(f"Login failed ({resp.status}): {body}")
+            login_body = {
+                "username": creds[0],
+                "password": creds[1],
+                "client_type": "bridge",
+            }
+            if len(creds) > 2 and creds[2]:
+                c = str(creds[2]).strip()
+                try:
+                    login_body["company_id"] = int(c)
+                except ValueError:
+                    login_body["company"] = c
+            elif getattr(self, "_admin_company_id", None) is not None:
+                login_body["company_id"] = self._admin_company_id
+            async with session.post(f"{server}/api/auth/login", json=login_body) as resp:
                 data = await resp.json()
+                if resp.status == 409 and data.get("code") == "COMPANY_REQUIRED":
+                    cos = data.get("companies") or []
+                    names = ", ".join(str(x.get("company_name") or x.get("company_id")) for x in cos)
+                    raise RuntimeError(f"Choose company: {names}")
+                if resp.status != 200:
+                    raise RuntimeError(data.get("error") or f"Login failed ({resp.status})")
                 token = data["token"]
             async with session.get(f"{server}/api/rooms/directory",
                                    headers={"Authorization": f"Bearer {token}"}) as resp:
                 if resp.status != 200:
                     raise RuntimeError(f"Directory: {resp.status}")
-                return await resp.json()
+                directory = await resp.json()
+            try:
+                async with session.get(f"{server}/api/auth/companies") as resp:
+                    if resp.status == 200:
+                        directory["companies"] = await resp.json()
+            except Exception:
+                pass
+            return directory
 
     def _apply_directory(self, directory: dict):
         users = directory.get("users", [])
         groups = directory.get("groups", [])
+        companies = directory.get("companies", []) or []
+        # Single-company deployments: pick the only company automatically.
+        if self._admin_company_id is None and len(companies) == 1:
+            c0 = companies[0]
+            if isinstance(c0, dict):
+                self._admin_company_id = c0.get("id")
+                self._admin_company_name = c0.get("name") or ""
+        elif self._admin_company_id is not None and not self._admin_company_name:
+            for c0 in companies:
+                if isinstance(c0, dict) and c0.get("id") == self._admin_company_id:
+                    self._admin_company_name = c0.get("name") or ""
+                    break
         for row in self.channel_rows:
             row.set_directory(users, groups)
             row.apply_pending_target()
-        self.status_var.set(f"✓ {len(users)} usuarios, {len(groups)} grupos")
+        co = self._admin_company_name or (
+            f"id={self._admin_company_id}" if self._admin_company_id is not None else "—"
+        )
+        self.status_var.set(
+            f"✓ {len(users)} usuarios, {len(groups)} grupos  │  Empresa: {co}"
+        )
+        if hasattr(self, "_company_status_var"):
+            self._company_status_var.set(f"Empresa: {co}")
 
     # ======================== CONNECT / DISCONNECT ========================
 
@@ -1371,10 +1905,16 @@ class BridgeApp:
             messagebox.showerror("Audio", f"Cannot open device:\n{e}")
             return
 
+        # Company is global for the whole bridge (one company per session).
+        global_cid = self._admin_company_id
+        global_co = self._admin_company_name or ""
+        if global_cid is None and cfg.get("company_id") not in (None, "", 0, "0"):
+            global_cid = cfg.get("company_id")
         ch = TieLineChannel(
             index=cfg["index"] - 1, server_url=server,
             username=cfg["username"], password=cfg["password"],
             target_type=cfg["target_type"], target_id=cfg["target_id"],
+            company_id=global_cid, company=global_co,
             audio_pool=self.audio_pool,
             input_device=in_dev, input_channel=in_ch,
             output_device=out_dev, output_channel=out_ch,
@@ -1491,6 +2031,153 @@ class BridgeApp:
 
     # ======================== CONFIG ========================
 
+    def _build_config_dict(self) -> dict:
+        """Snapshot the full in-memory configuration (all companies + UI)."""
+        self._store_active_company_bank()
+        active = self._by_company.get(self._company_key(self._admin_company_id), {})
+        channels = list(active.get("channels") or [])
+        return {
+            "server": self.server_var.get().strip(),
+            "input_device": self.input_dev_var.get(),
+            "output_device": self.output_dev_var.get(),
+            "bridge_ip": self.bridge_ip_var.get().strip(),
+            "num_device_channels": int(self.num_ch_var.get() or "16"),
+            "total_channels": self._total_channels,
+            "current_bank": self._current_bank,
+            "sample_rate": 48000,
+            "audio_api": self.audio_api_var.get() if hasattr(self, "audio_api_var") else "All",
+            "company_id": self._admin_company_id,
+            "company_name": self._admin_company_name or None,
+            "by_company": self._by_company,
+            "channels": channels,
+        }
+
+    def _write_config_to_path(self, path: str) -> None:
+        config = self._build_config_dict()
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+
+    def _apply_config_dict(self, config: dict) -> None:
+        """Apply a config dict to the UI (same rules as startup load)."""
+        if any(ch is not None for ch in self._channels_running) or self.channels:
+            raise RuntimeError(
+                "Desconecta todos los canales antes de cargar otra configuración."
+            )
+        self.server_var.set(config.get("server", "") or "")
+        self.bridge_ip_var.set(config.get("bridge_ip", "") or "")
+        self.num_ch_var.set(str(config.get("num_device_channels", 16)))
+        api = config.get("audio_api") or (
+            "MME" if sys.platform.startswith("win") else "All"
+        )
+        if api not in ("MME", "WASAPI", "Both", "All"):
+            api = "All"
+        if hasattr(self, "audio_api_var"):
+            self.audio_api_var.set(api)
+        self._admin_company_id = None
+        self._admin_company_name = ""
+        if config.get("company_id") not in (None, "", 0, "0"):
+            try:
+                self._admin_company_id = int(config.get("company_id"))
+            except (TypeError, ValueError):
+                self._admin_company_id = config.get("company_id")
+        if config.get("company_name"):
+            self._admin_company_name = str(config.get("company_name"))
+        by_co = config.get("by_company")
+        if isinstance(by_co, dict) and by_co:
+            # Deep-ish copy so later UI edits don't mutate the loaded file object
+            self._by_company = json.loads(json.dumps(by_co))
+        else:
+            legacy_channels = config.get("channels", []) or []
+            key = self._company_key(self._admin_company_id)
+            self._by_company = {
+                key: {
+                    "company_id": self._admin_company_id,
+                    "company_name": self._admin_company_name or None,
+                    "total_channels": config.get("total_channels", 16),
+                    "current_bank": config.get("current_bank", 0),
+                    "input_device": config.get("input_device", ""),
+                    "output_device": config.get("output_device", ""),
+                    "num_device_channels": config.get("num_device_channels", 16),
+                    "channels": legacy_channels,
+                }
+            }
+        if hasattr(self, "_company_status_var"):
+            co = self._admin_company_name or (
+                f"id={self._admin_company_id}" if self._admin_company_id is not None else "—"
+            )
+            self._company_status_var.set(f"Empresa: {co}")
+        active = self._by_company.get(self._company_key(self._admin_company_id), {})
+        self._load_company_bank_into_ui(active)
+        # Devices may differ on this machine — refresh lists but keep saved names.
+        try:
+            self._refresh_devices()
+        except Exception:
+            pass
+
+    def _save_config_dialog(self):
+        """Save current configuration to a user-chosen JSON file (profile)."""
+        path = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Guardar configuración TieLine Bridge",
+            defaultextension=".json",
+            filetypes=[
+                ("Configuración TieLine", "*.json"),
+                ("Todos los archivos", "*.*"),
+            ],
+            initialfile="tieline-bridge-config.json",
+        )
+        if not path:
+            return
+        try:
+            self._write_config_to_path(path)
+            # Also refresh the working config.json so next launch matches.
+            try:
+                self._write_config_to_path(CONFIG_FILE)
+            except Exception:
+                pass
+            self.status_var.set(f"✓ Configuración guardada: {os.path.basename(path)}")
+            messagebox.showinfo("Guardar", f"Configuración guardada en:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Guardar", f"No se pudo guardar:\n{e}")
+
+    def _load_config_dialog(self):
+        """Load configuration from a user-chosen JSON file (profile)."""
+        path = filedialog.askopenfilename(
+            parent=self.root,
+            title="Cargar configuración TieLine Bridge",
+            filetypes=[
+                ("Configuración TieLine", "*.json"),
+                ("Todos los archivos", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        try:
+            with open(path, encoding="utf-8") as f:
+                config = json.load(f)
+            if not isinstance(config, dict):
+                raise RuntimeError("El archivo no contiene un objeto JSON de configuración.")
+            self._apply_config_dict(config)
+            # Persist as working config so it survives restart.
+            try:
+                self._write_config_to_path(CONFIG_FILE)
+            except Exception:
+                pass
+            # Require login again against the loaded server before connect.
+            self._admin_authenticated = False
+            self._admin_token = None
+            self._update_auth_state()
+            self.status_var.set(
+                f"✓ Config cargada: {os.path.basename(path)} — pulsa 🔒 Login"
+            )
+            messagebox.showinfo(
+                "Cargar",
+                f"Configuración cargada desde:\n{path}\n\n"
+                "Pulsa 🔒 Login para autenticarte en el servidor antes de conectar.",
+            )
+        except Exception as e:
+            messagebox.showerror("Cargar", f"No se pudo cargar:\n{e}")
+
     def _reset_config(self):
         """Wipe config.json and reset all fields to defaults. Useful when
         moving the bridge to a different server and the cached channel
@@ -1556,37 +2243,16 @@ class BridgeApp:
 
         # Gate buttons again until the user logs in against the new server
         self._admin_authenticated = False
+        self._admin_token = None
+        self._admin_creds = None
         self._update_auth_state()
         self._server_status.configure(text_color=COLOR_DIM)
         self.status_var.set("Config reset — enter the new server URL and press 🔒 Login")
 
     def _save_config(self):
-        # Pull the freshest data from the visible rows into `_channel_data`,
-        # then dump everything (visible + paged-out) up to total_channels.
-        self._stash_visible_into_data()
-        channels = []
-        for i in range(self._total_channels):
-            data = self._channel_data[i] or {}
-            if data:
-                # Force the index to match the slot, in case it was loaded
-                # from a config that used a different slot ordering.
-                data = dict(data)
-                data["index"] = i + 1
-                channels.append(data)
-        config = {
-            "server": self.server_var.get().strip(),
-            "input_device": self.input_dev_var.get(),
-            "output_device": self.output_dev_var.get(),
-            "bridge_ip": self.bridge_ip_var.get().strip(),
-            "num_device_channels": int(self.num_ch_var.get()),
-            "total_channels": self._total_channels,
-            "current_bank": self._current_bank,
-            "sample_rate": 48000,
-            "channels": channels,
-        }
+        """Autosave working config.json (on change / exit)."""
         try:
-            with open(CONFIG_FILE, "w") as f:
-                json.dump(config, f, indent=2)
+            self._write_config_to_path(CONFIG_FILE)
         except Exception as e:
             print(f"Error saving config: {e}")
 
@@ -1605,37 +2271,16 @@ class BridgeApp:
             else:
                 return
         try:
-            with open(path) as f:
+            with open(path, encoding="utf-8") as f:
                 config = json.load(f)
         except Exception:
             return
-        self.server_var.set(config.get("server", ""))
-        self.bridge_ip_var.set(config.get("bridge_ip", ""))
-        self.num_ch_var.set(str(config.get("num_device_channels", 16)))
-        saved_input = config.get("input_device", "")
-        saved_output = config.get("output_device", "")
-        if saved_input:
-            self.input_dev_var.set(saved_input)
-        if saved_output:
-            self.output_dev_var.set(saved_output)
-        # Restore total channels + last visible bank from the saved config
-        # (defaults to 16 / first bank when missing).
-        total = config.get("total_channels", 16)
-        if total in (8, 16, 24, 32):
-            self._total_channels = total
-            self._total_var.set(str(total))
-        # Spread saved channels into _channel_data by their index.
-        for ch_cfg in config.get("channels", []):
-            idx = ch_cfg.get("index", 0) - 1
-            if 0 <= idx < 32:
-                self._channel_data[idx] = ch_cfg
-        bank = config.get("current_bank", 0)
-        max_bank = self._bank_count() - 1
-        self._current_bank = max(0, min(bank, max_bank))
-        # Hydrate the 8 visible rows with the entries belonging to the
-        # current bank.
-        self._load_visible_from_data()
-        self._refresh_bank_indicators()
+        if not isinstance(config, dict):
+            return
+        try:
+            self._apply_config_dict(config)
+        except Exception as e:
+            print(f"Error loading config: {e}")
 
     # ======================== RUN ========================
 

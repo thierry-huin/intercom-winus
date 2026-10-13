@@ -60,7 +60,7 @@ Abrir en firewall/router:
 
 ## 2. Instalación del servidor
 
-### 2.1 Desde paquete (recomendado)
+### 2.1.1 Desde paquete (recomendado)
 
 ```bash
 # Descomprimir el paquete
@@ -86,6 +86,13 @@ Después automáticamente:
 - Construye contenedores Docker
 - Arranca todos los servicios
 - Instala panel de gestión como servicio systemd
+
+### 2.1.1 Desde paquete Proxmox
+
+1. Copy winus-intercom-server-YYYMMDD.HHHH.tar.gz to the Proxmox container/VM
+  2. tar xzf winus-intercom-server-20260922.1843.tar.gz
+  3. cd winus-intercom-deploy-*
+  4. sudo bash deploy-proxmox.sh
 
 ### 2.2 Desde repositorio (desarrollo)
 

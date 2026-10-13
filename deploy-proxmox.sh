@@ -210,11 +210,33 @@ echo -e "${CYAN}[6/6]${NC} Starting services..."
 chown -R "$REAL_USER:$REAL_USER" "$APP_DIR" 2>/dev/null || true
 
 cd "$APP_DIR"
-# NO --build flag — uses pre-loaded images
-docker compose up -d
+# NO --build flag — uses pre-loaded images.
+# Always force-recreate so a re-tagged :latest from docker load actually
+# replaces running containers (otherwise an upgrade keeps the old backend
+# image and new features like multi-company never appear).
+docker compose up -d --force-recreate --remove-orphans
 
-sleep 3
+sleep 4
 docker compose ps
+echo ""
+echo -e "${CYAN}Backend image / company module check:${NC}"
+docker exec intercom-backend ls /app/src/services/company-scope.js 2>/dev/null \
+  && echo -e "  ${GREEN}✓${NC} multi-company backend present" \
+  || echo -e "  ${YELLOW}!${NC} company-scope.js missing — export may be outdated"
+# Wait for API then check public companies list (migration creates Default)
+for i in 1 2 3 4 5 6 7 8 9 10; do
+  if curl -sf http://127.0.0.1:3000/api/auth/companies >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+CO_JSON=$(curl -sf http://127.0.0.1:3000/api/auth/companies 2>/dev/null || true)
+if echo "$CO_JSON" | grep -q '"id"'; then
+  echo -e "  ${GREEN}✓${NC} companies API OK: $CO_JSON"
+else
+  echo -e "  ${YELLOW}!${NC} companies API not ready yet (will work after backend finishes DB migrate)"
+fi
+docker logs intercom-backend --tail 20 2>&1 | tail -20
 
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════╗${NC}"

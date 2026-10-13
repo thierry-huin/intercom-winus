@@ -3,20 +3,8 @@ import { combineRgb, type CompanionPresetDefinitions } from '@companion-module/b
 import type { WinusIntercomInstance } from './index.js'
 
 /**
- * Stream Deck XL layout (4 rows × 8 columns):
- *
- *   Col:  1          2       3       4       5       6       7       8
- *   R1:   (empty)    VOL+    VOL+    VOL+    VOL+    VOL+    VOL+    (empty)
- *   R2:   MIC MUTE   VOL-    VOL-    VOL-    VOL-    VOL-    VOL-    (empty)
- *   R3:   TALK ALL   TALK    TALK    TALK    TALK    TALK    TALK    (empty)
- *   R4:   (empty)    LATCH   LATCH   LATCH   LATCH   LATCH   LATCH   (empty)
- *
- * Columns 2-7 map to the first 6 targets from the server (auto-filled).
+ * Presets for Stream Deck: MIC MUTE, TALK ALL, per-target TALK + LATCH.
  */
-
-const BG_DEFAULT = combineRgb(30, 30, 30)
-const BG_VOL_UP = combineRgb(40, 60, 40)
-const BG_VOL_DOWN = combineRgb(60, 40, 40)
 const BG_TALK = combineRgb(50, 50, 50)
 const BG_LATCH = combineRgb(35, 35, 55)
 const BG_MIC_MUTE = combineRgb(50, 50, 50)
@@ -28,37 +16,7 @@ export function buildPresets(self: WinusIntercomInstance): CompanionPresetDefini
 	const targets = self.getTargetChoices().slice(0, 6)
 	const presets: CompanionPresetDefinitions = {}
 
-	// ── Row 2 Col 1: MIC MUTE ──
-	presets['mic_mute'] = {
-		type: 'simple',
-		category: 'Intercom Control',
-		name: 'Mic Mute',
-		style: {
-			text: 'MIC\\nMUTE',
-			size: 14,
-			color: FG_WHITE,
-			bgcolor: BG_MIC_MUTE,
-		},
-		steps: [
-			{
-				down: [{ actionId: 'mic_mute_toggle', options: {} }],
-				up: [],
-			},
-		],
-		feedbacks: [
-			{
-				feedbackId: 'mic_muted',
-				options: {},
-				style: {
-					bgcolor: combineRgb(200, 30, 30),
-					color: FG_WHITE,
-					text: 'MIC\\nOFF',
-				},
-			},
-		],
-	}
-
-	// ── Row 3 Col 1: TALK ALL ──
+	// ── TALK ALL ──
 	presets['talk_all'] = {
 		type: 'simple',
 		category: 'Intercom Control',
@@ -86,47 +44,7 @@ export function buildPresets(self: WinusIntercomInstance): CompanionPresetDefini
 		// Short label for button text (first word or truncated)
 		const short = label.split(/[\s(]/)[0].substring(0, 8)
 
-		// Row 1: VOL+
-		presets[`vol_up_${i}`] = {
-			type: 'simple',
-			category: 'Volume',
-			name: `Vol+ ${label}`,
-			style: {
-				text: `${short}\\n▲ VOL`,
-				size: 'auto',
-				color: FG_DIM,
-				bgcolor: BG_VOL_UP,
-			},
-			steps: [
-				{
-					down: [{ actionId: 'volume_up', options: { target: targetId } }],
-					up: [],
-				},
-			],
-			feedbacks: [],
-		}
-
-		// Row 2: VOL-
-		presets[`vol_down_${i}`] = {
-			type: 'simple',
-			category: 'Volume',
-			name: `Vol- ${label}`,
-			style: {
-				text: `${short}\\n▼ VOL`,
-				size: 'auto',
-				color: FG_DIM,
-				bgcolor: BG_VOL_DOWN,
-			},
-			steps: [
-				{
-					down: [{ actionId: 'volume_down', options: { target: targetId } }],
-					up: [],
-				},
-			],
-			feedbacks: [],
-		}
-
-		// Row 3: TALK (momentary)
+		// TALK (momentary)
 		presets[`talk_${i}`] = {
 			type: 'simple',
 			category: 'PTT Momentary',

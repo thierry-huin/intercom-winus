@@ -13,12 +13,18 @@
             <div id="error" class="alert alert-error" style="display:none"></div>
             <form id="loginForm">
                 <div class="form-group">
-                    <label>Usuario</label>
-                    <input type="text" id="username" required autofocus>
+                    <label>Empresa</label>
+                    <select id="company" required>
+                        <option value="">Cargando empresas…</option>
+                    </select>
                 </div>
                 <div class="form-group">
-                    <label>Contraseña</label>
-                    <input type="password" id="password" required>
+                    <label>Admin</label>
+                    <input type="text" id="username" required autofocus autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label>Password</label>
+                    <input type="password" id="password" required autocomplete="current-password">
                 </div>
                 <button type="submit" class="btn btn-primary" style="width:100%">Entrar</button>
             </form>
@@ -27,15 +33,57 @@
 
     <script src="js/api.js"></script>
     <script>
+        async function loadCompanies() {
+            const sel = document.getElementById('company');
+            const errorDiv = document.getElementById('error');
+            try {
+                const list = await IntercomAPI.getLoginCompanies();
+                sel.innerHTML = '';
+                if (!list.length) {
+                    sel.innerHTML = '<option value="">No hay empresas</option>';
+                    return;
+                }
+                const placeholder = document.createElement('option');
+                placeholder.value = '';
+                placeholder.textContent = 'Selecciona empresa';
+                sel.appendChild(placeholder);
+                const saved = localStorage.getItem('intercom_company_id');
+                list.forEach((c) => {
+                    const opt = document.createElement('option');
+                    opt.value = String(c.id);
+                    opt.textContent = c.name || ('Empresa ' + c.id);
+                    if (saved && String(c.id) === saved) opt.selected = true;
+                    sel.appendChild(opt);
+                });
+                if (!saved && list.length === 1) {
+                    sel.value = String(list[0].id);
+                }
+            } catch (err) {
+                sel.innerHTML = '<option value="">Error al cargar empresas</option>';
+                errorDiv.textContent = err.message;
+                errorDiv.style.display = 'block';
+            }
+        }
+
         document.getElementById('loginForm').addEventListener('submit', async (e) => {
             e.preventDefault();
+            const companyId = document.getElementById('company').value;
             const username = document.getElementById('username').value;
             const password = document.getElementById('password').value;
             const errorDiv = document.getElementById('error');
+            errorDiv.style.display = 'none';
+
+            if (!companyId) {
+                errorDiv.textContent = 'Selecciona una empresa';
+                errorDiv.style.display = 'block';
+                return;
+            }
 
             try {
-                const data = await IntercomAPI.login(username, password);
-                if (data.user.role === 'admin') {
+                const data = await IntercomAPI.login(username, password, { company_id: Number(companyId) });
+                localStorage.setItem('intercom_company_id', companyId);
+                const role = data.user.role;
+                if (role === 'admin' || role === 'superuser' || role === 'superadmin') {
                     window.location.href = 'admin.html';
                 } else {
                     window.location.href = 'intercom.html';
@@ -49,11 +97,13 @@
         // Auto-redirect if already logged in
         if (IntercomAPI.getToken()) {
             const user = IntercomAPI.getUser();
-            if (user && user.role === 'admin') {
+            if (user && (user.role === 'admin' || user.role === 'superuser' || user.role === 'superadmin')) {
                 window.location.href = 'admin.html';
             } else if (user) {
                 window.location.href = 'intercom.html';
             }
+        } else {
+            loadCompanies();
         }
     </script>
 </body>

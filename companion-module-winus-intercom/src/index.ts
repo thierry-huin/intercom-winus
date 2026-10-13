@@ -31,6 +31,7 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 	private receiving = new Set<number>() // user IDs currently talking to us
 	private targets: Target[] = []
 	private micMuted = false
+	private mutedPtts = new Set<TargetKey>() // PTTs paused by mute-all
 	private volumes = new Map<TargetKey, number>() // 0-100, default 100
 
 	async init(config: WinusIntercomConfig, _isFirstInit: boolean): Promise<void> {
@@ -233,17 +234,46 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 		this.checkFeedbacks('target_talking' as any, 'target_latched' as any)
 	}
 
-	/** Mic mute toggle — pauses/resumes the mediasoup producer. */
-	handleMicMuteToggle(): void {
+	/** Ring a user to get their attention. */
+	handleRingUser(targetKey: TargetKey): void {
+		const t = parseTargetKey(targetKey)
+		if (!t || t.type !== 'user' || !this.session) return
+		this.session.ringUser(t.id)
+		this.log('info', `Ring sent to user ${t.id}`)
+	}
+
+	/** Mute All: stop all active PTTs, restore on second press. */
+	handleMuteAllToggle(): void {
 		if (!this.session) return
-		this.micMuted = !this.micMuted
-		if (this.micMuted) {
-			this.session.pauseProducer()
+		if (!this.micMuted) {
+			// Mute: stop all active PTTs, remember them
+			this.mutedPtts.clear()
+			for (const key of this.talking) {
+				const t = parseTargetKey(key)
+				if (t) {
+					this.session.pttStop(t.type, t.id)
+					this.mutedPtts.add(key)
+				}
+			}
+			this.talking.clear()
+			this.micMuted = true
 		} else {
-			this.session.resumeProducer()
+			// Unmute: restore saved PTTs
+			for (const key of this.mutedPtts) {
+				const t = parseTargetKey(key)
+				if (t) {
+					this.session.pttStart(t.type, t.id)
+					this.talking.add(key)
+				}
+			}
+			this.mutedPtts.clear()
+			this.micMuted = false
 		}
-		this.setVariableValues({ mic_muted: this.micMuted ? 'yes' : 'no' } as any)
-		this.checkFeedbacks('mic_muted' as any)
+		this.setVariableValues({
+			talking_count: String(this.talking.size),
+			mic_muted: this.micMuted ? 'yes' : 'no',
+		} as any)
+		this.checkFeedbacks('target_talking' as any, 'mute_all' as any)
 	}
 
 	/** Talk All — momentary PTT to every target. */
@@ -301,7 +331,11 @@ export class WinusIntercomInstance extends InstanceBase<WinusIntercomConfig> {
 				this.setVariableValues({ talking_count: String(this.talking.size) })
 				this.checkFeedbacks('target_talking' as any)
 			},
-			onLatchChanged: () => this.checkFeedbacks('target_latched'),
+		onLatchChanged: (latched: boolean) => {
+				if (latched) this.latched.add(key)
+				else this.latched.delete(key)
+				this.checkFeedbacks('target_latched' as any)
+			},
 		})
 		this.gestures.set(key, g)
 		return g

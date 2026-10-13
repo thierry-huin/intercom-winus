@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -31,11 +32,67 @@ class _LoginScreenState extends State<LoginScreen> {
   String? _currentServerUrl; // URL the services are currently pointing to
   bool _serverExpanded = false;
 
+/// Optional company scope for login (same username may exist in several companies).
+  List<dynamic> _loginCompanies = [];
+  int? _selectedCompanyId;
+  bool _companiesLoading = true;
+  String? _companiesError;
+
   @override
   void initState() {
     super.initState();
     _loadServerInfo();
+    // Defer Provider lookup until after the first frame so context is safe
+    // on web and native, then load the public company list.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _loadLoginCompanies();
+    });
     _tryAutoLogin();
+  }
+
+  Future<void> _loadLoginCompanies() async {
+    if (!mounted) return;
+    setState(() {
+      _companiesLoading = true;
+      _companiesError = null;
+    });
+    try {
+      final list = await context.read<AuthProvider>().api.getLoginCompanies();
+      if (!mounted) return;
+      // Restore previously selected company if still in the list.
+      final prefs = await SharedPreferences.getInstance();
+      final savedCo = prefs.getInt('auth_company_id');
+      int? restore;
+      if (savedCo != null) {
+        for (final c in list) {
+          final id = c['id'];
+          final iid = id is int ? id : int.tryParse('$id');
+          if (iid == savedCo) {
+            restore = savedCo;
+            break;
+          }
+        }
+      }
+      // If only one company, pre-select it.
+      if (restore == null && list.length == 1) {
+        final id = list.first['id'];
+        restore = id is int ? id : int.tryParse('$id');
+      }
+      setState(() {
+        _loginCompanies = list;
+        _selectedCompanyId = restore ?? _selectedCompanyId;
+        _companiesLoading = false;
+        _companiesError = list.isEmpty ? 'No hay empresas configuradas en el servidor' : null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _loginCompanies = [];
+        _companiesLoading = false;
+        _companiesError = 'No se pudieron cargar las empresas: $e';
+      });
+      debugPrint('[Login] getLoginCompanies failed: $e');
+    }
   }
 
   Future<void> _loadServerInfo() async {
@@ -111,7 +168,7 @@ class _LoginScreenState extends State<LoginScreen> {
     await prefs.setString(_historyKey, jsonEncode(_serverHistory));
   }
 
-  Future<void> _login() async {
+  Future<void> _login({int? companyId}) async {
     final serverUrl = _serverCtrl.text.trim();
 
     // Guard against race condition: _loadServerInfo() is async and might not
@@ -133,10 +190,53 @@ class _LoginScreenState extends State<LoginScreen> {
     }
 
     final auth = context.read<AuthProvider>();
-    final ok = await auth.login(_userCtrl.text.trim(), _passCtrl.text);
+    final cid = companyId ?? _selectedCompanyId;
+    if (cid == null) {
+      // Force company selection from the dropdown before login.
+      auth.clearCompanyChoices();
+      // Surface a clear error via a local snack / set error path:
+      // AuthProvider.error is private-set; show inline by reusing company error.
+      if (mounted) {
+        setState(() {
+          _companiesError = 'Selecciona una empresa';
+        });
+      }
+      return;
+    }
+    final ok = await auth.login(
+      _userCtrl.text.trim(),
+      _passCtrl.text,
+      companyId: cid,
+    );
     if (ok && mounted) {
       Navigator.pushReplacementNamed(context, '/intercom');
+      return;
     }
+    // Ambiguous username → show company picker dialog from server choices.
+    if (mounted && auth.companyChoices != null && auth.companyChoices!.isNotEmpty) {
+      final chosen = await _pickCompanyDialog(auth.companyChoices!);
+      if (chosen != null && mounted) {
+        setState(() => _selectedCompanyId = chosen);
+        await _login(companyId: chosen);
+      }
+    }
+  }
+
+  Future<int?> _pickCompanyDialog(List<Map<String, dynamic>> choices) async {
+    return showDialog<int>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: const Text('Elige la empresa'),
+        children: choices.map((c) {
+          final id = c['company_id'];
+          final name = (c['company_name'] ?? 'Empresa $id').toString();
+          return SimpleDialogOption(
+            onPressed: () => Navigator.pop(ctx, id is int ? id : int.tryParse('$id')),
+            child: Text(name),
+          );
+        }).toList(),
+      ),
+    );
   }
 
   @override
@@ -185,7 +285,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       const Text('Winus Intercom',
                           style: TextStyle(fontSize: 26, fontWeight: FontWeight.bold, color: AppColors.textPrimary)),
                       const SizedBox(height: 4),
-                      const Text('Enter your credentials',
+                      const Text('Elige empresa, admin y contraseña',
                           style: TextStyle(color: AppColors.textSecondary, fontSize: 13)),
 
                       // ── Server section (native only) ──
@@ -195,15 +295,57 @@ class _LoginScreenState extends State<LoginScreen> {
                       ],
 
                       const SizedBox(height: 24),
+                      // 1) Empresa (dropdown)
+                      if (_companiesLoading)
+                        const Padding(
+                          padding: EdgeInsets.only(bottom: 12),
+                          child: LinearProgressIndicator(minHeight: 2),
+                        ),
+                      DropdownButtonFormField<int?>(
+                        value: _selectedCompanyId,
+                        isExpanded: true,
+                        decoration: InputDecoration(
+                          labelText: 'Empresa',
+                          prefixIcon: const Icon(Icons.business_outlined),
+                          helperText: _companiesError,
+                          helperMaxLines: 2,
+                          suffixIcon: IconButton(
+                            tooltip: 'Recargar empresas',
+                            icon: const Icon(Icons.refresh, size: 20),
+                            onPressed: _companiesLoading ? null : _loadLoginCompanies,
+                          ),
+                        ),
+                        hint: const Text('Selecciona empresa'),
+                        items: _loginCompanies.map((c) {
+                          final id = c['id'];
+                          final iid = id is int ? id : int.tryParse('$id') ?? -1;
+                          final name = (c['name'] ?? 'Empresa $id').toString();
+                          return DropdownMenuItem<int?>(
+                            value: iid >= 0 ? iid : null,
+                            child: Text(name, overflow: TextOverflow.ellipsis),
+                          );
+                        }).toList(),
+onChanged: _companiesLoading
+                            ? null
+                            : (v) => setState(() {
+                                  _selectedCompanyId = v;
+                                  if (v != null && _companiesError == 'Selecciona una empresa') {
+                                    _companiesError = null;
+                                  }
+                                }),
+                      ),
+                      const SizedBox(height: 16),
+                      // 2) Admin
                       TextField(
                         controller: _userCtrl,
                         decoration: const InputDecoration(
-                          labelText: 'Username',
+                          labelText: 'Admin',
                           prefixIcon: Icon(Icons.person_outline),
                         ),
                         onSubmitted: (_) => _login(),
                       ),
                       const SizedBox(height: 16),
+                      // 3) Password
                       TextField(
                         controller: _passCtrl,
                         decoration: const InputDecoration(

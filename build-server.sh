@@ -4,7 +4,7 @@ set -e
 cd "$(dirname "$0")"
 
 echo "=== Building backend ==="
-docker compose build backend
+docker compose build --no-cache backend
 echo "✓ Backend built"
 
 echo "=== Restarting backend ==="

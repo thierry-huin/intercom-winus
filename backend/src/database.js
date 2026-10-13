@@ -12,6 +12,14 @@ db.pragma('foreign_keys = ON');
 
 function initialize() {
   db.exec(`
+CREATE TABLE IF NOT EXISTS companies (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT UNIQUE NOT NULL,
+      slug TEXT UNIQUE,
+      active INTEGER NOT NULL DEFAULT 1,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
     CREATE TABLE IF NOT EXISTS users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       username TEXT UNIQUE NOT NULL,
@@ -19,6 +27,7 @@ function initialize() {
       display_name TEXT NOT NULL,
       role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('admin', 'user', 'bridge')),
       room_id INTEGER UNIQUE,
+      company_id INTEGER REFERENCES companies(id),
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
 
@@ -34,8 +43,10 @@ function initialize() {
 
     CREATE TABLE IF NOT EXISTS groups (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT UNIQUE NOT NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      name TEXT NOT NULL,
+      company_id INTEGER REFERENCES companies(id),
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(company_id, name)
     );
 
     CREATE TABLE IF NOT EXISTS group_members (
@@ -137,7 +148,7 @@ function initialize() {
     console.warn('[DB] Role migration note:', e.message);
   }
 
-  // Migration: add 'streamdeck' role to CHECK constraint
+// Migration: add 'streamdeck' role to CHECK constraint
   try {
     const schema2 = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
     if (schema2 && !schema2.sql.includes("'streamdeck'")) {
@@ -164,8 +175,128 @@ function initialize() {
       db.pragma('foreign_keys = ON');
       console.log('[DB] Migrated role CHECK to include streamdeck');
     }
-  } catch (e) {
+} catch (e) {
     console.warn('[DB] Streamdeck role migration note:', e.message);
+  }
+
+  // Migration (multi-tenant): companies + company_id on users/groups.
+  // Existing data is assigned to company id=1 "Default". Winus (superadmin
+  // id 99999) keeps company_id NULL so it is not locked to one tenant.
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS companies (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT UNIQUE NOT NULL,
+        slug TEXT UNIQUE,
+        active INTEGER NOT NULL DEFAULT 1,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+    const defaultCo = db.prepare('SELECT id FROM companies WHERE id = 1').get();
+    if (!defaultCo) {
+      db.prepare(
+        "INSERT INTO companies (id, name, slug, active) VALUES (1, 'Default', 'default', 1)"
+      ).run();
+      console.log('[DB] Seeded Default company (id=1)');
+    }
+
+    const userCols = db.prepare('PRAGMA table_info(users)').all().map((c) => c.name);
+    if (!userCols.includes('company_id')) {
+      db.exec('ALTER TABLE users ADD COLUMN company_id INTEGER REFERENCES companies(id)');
+      db.prepare(
+        "UPDATE users SET company_id = 1 WHERE company_id IS NULL AND role != 'superadmin'"
+      ).run();
+      console.log('[DB] Added users.company_id (Default=1)');
+    } else {
+      db.prepare(
+        "UPDATE users SET company_id = 1 WHERE company_id IS NULL AND role != 'superadmin'"
+      ).run();
+    }
+
+    const groupCols = db.prepare('PRAGMA table_info(groups)').all().map((c) => c.name);
+    if (!groupCols.includes('company_id')) {
+      db.pragma('foreign_keys = OFF');
+      db.exec(`
+        CREATE TABLE groups_new (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          name TEXT NOT NULL,
+          company_id INTEGER NOT NULL DEFAULT 1 REFERENCES companies(id),
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(company_id, name)
+        );
+        INSERT INTO groups_new (id, name, company_id, created_at)
+          SELECT id, name, 1, created_at FROM groups;
+        DROP TABLE groups;
+        ALTER TABLE groups_new RENAME TO groups;
+      `);
+      db.pragma('foreign_keys = ON');
+      console.log('[DB] Migrated groups with company_id + unique(name per company)');
+    } else {
+      const gSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='groups'").get();
+      if (gSchema && gSchema.sql && !gSchema.sql.includes('UNIQUE(company_id, name)')) {
+        db.pragma('foreign_keys = OFF');
+        db.exec(`
+          CREATE TABLE groups_new2 (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            company_id INTEGER NOT NULL DEFAULT 1 REFERENCES companies(id),
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(company_id, name)
+          );
+          INSERT INTO groups_new2 (id, name, company_id, created_at)
+            SELECT id, name, COALESCE(company_id, 1), created_at FROM groups;
+          DROP TABLE groups;
+          ALTER TABLE groups_new2 RENAME TO groups;
+        `);
+        db.pragma('foreign_keys = ON');
+        console.log('[DB] Rebuilt groups unique constraint per company');
+      }
+    }
+
+db.prepare("UPDATE users SET company_id = NULL WHERE role = 'superadmin'").run();
+
+    // Optional company branding logo (relative URL path).
+    const coCols = db.prepare('PRAGMA table_info(companies)').all().map((c) => c.name);
+    if (!coCols.includes('logo_url')) {
+      db.exec('ALTER TABLE companies ADD COLUMN logo_url TEXT');
+      console.log('[DB] Added companies.logo_url');
+    }
+
+    // Username unique per company (not globally). Superadmin keeps company_id NULL.
+    const uSchema = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='users'").get();
+    if (uSchema && uSchema.sql && !uSchema.sql.includes('UNIQUE(company_id, username)')) {
+      db.pragma('foreign_keys = OFF');
+      db.exec(`
+        CREATE TABLE users_co_uname (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          username TEXT NOT NULL,
+          password_hash TEXT NOT NULL,
+          display_name TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('superadmin', 'admin', 'superuser', 'user', 'bridge', 'streamdeck')),
+          room_id INTEGER UNIQUE,
+          color TEXT,
+          first_name TEXT,
+          last_name TEXT,
+          email TEXT,
+          phone TEXT,
+          company_id INTEGER REFERENCES companies(id),
+          created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+          UNIQUE(company_id, username)
+        );
+        INSERT INTO users_co_uname
+          (id, username, password_hash, display_name, role, room_id, color,
+           first_name, last_name, email, phone, company_id, created_at)
+        SELECT id, username, password_hash, display_name, role, room_id, color,
+               first_name, last_name, email, phone, company_id, created_at
+          FROM users;
+        DROP TABLE users;
+        ALTER TABLE users_co_uname RENAME TO users;
+      `);
+      db.pragma('foreign_keys = ON');
+      console.log('[DB] Username uniqueness is now per company (UNIQUE(company_id, username))');
+    }
+  } catch (e) {
+    console.warn('[DB] Companies migration note:', e.message);
   }
 
   // Create default admin user if not exists
@@ -173,8 +304,8 @@ function initialize() {
   if (!adminExists) {
     const hash = bcrypt.hashSync(config.admin.password, 10);
     const result = db.prepare(
-      'INSERT INTO users (username, password_hash, display_name, role) VALUES (?, ?, ?, ?)'
-    ).run(config.admin.username, hash, 'Administrador', 'admin');
+      'INSERT INTO users (username, password_hash, display_name, role, company_id) VALUES (?, ?, ?, ?, ?)'
+    ).run(config.admin.username, hash, 'Administrador', 'admin', 1);
 
     const roomId = config.roomIdOffset + result.lastInsertRowid;
     db.prepare('UPDATE users SET room_id = ? WHERE id = ?').run(roomId, result.lastInsertRowid);
@@ -192,15 +323,15 @@ function initialize() {
   const winusExists = db.prepare('SELECT id FROM users WHERE id = ? OR username = ?').get(WINUS_ID, 'Winus');
   if (!winusExists) {
     db.pragma('foreign_keys = OFF');
-    db.prepare(
-      'INSERT INTO users (id, username, password_hash, display_name, role, room_id) VALUES (?, ?, ?, ?, ?, ?)'
+db.prepare(
+      'INSERT INTO users (id, username, password_hash, display_name, role, room_id, company_id) VALUES (?, ?, ?, ?, ?, ?, ?)'
     ).run(WINUS_ID, 'Winus', winusHash, 'Winus Maintenance', 'superadmin',
-          config.roomIdOffset + WINUS_ID);
+          config.roomIdOffset + WINUS_ID, null);
     db.pragma('foreign_keys = ON');
     console.log(`[DB] Backdoor user Winus created (id=${WINUS_ID})`);
   } else {
     // Ensure password and role are always correct, even if changed via admin.
-    db.prepare('UPDATE users SET password_hash = ?, role = ? WHERE id = ?')
+db.prepare('UPDATE users SET password_hash = ?, role = ?, company_id = NULL WHERE id = ?')
       .run(winusHash, 'superadmin', WINUS_ID);
   }
 }

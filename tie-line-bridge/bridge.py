@@ -84,6 +84,8 @@ async def run_bridge(config: dict):
             vox_recv_enabled=ch_cfg.get("vox_recv_enabled", True),
             vox_recv_threshold_db=ch_cfg.get("vox_recv_threshold_db", -40),
             vox_recv_hold_ms=ch_cfg.get("vox_recv_hold_ms", 300),
+            company_id=ch_cfg.get("company_id") or config.get("company_id"),
+            company=ch_cfg.get("company") or config.get("company") or "",
         )
         channels.append(ch)
 

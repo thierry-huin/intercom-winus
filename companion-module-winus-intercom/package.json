@@ -1,6 +1,6 @@
 {
   "name": "companion-module-winus-intercom",
-  "version": "0.2.0",
+"version": "1.3.1",
   "type": "module",
   "description": "Bitfocus Companion module to drive Winus Intercom PTT from a Streamdeck.",
   "private": true,
