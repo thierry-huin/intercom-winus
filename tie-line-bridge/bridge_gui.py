@@ -18,6 +18,12 @@ from tkinter import filedialog, messagebox
 
 import aiohttp
 import customtkinter as ctk
+
+# Windows: load PortAudio-with-ASIO before sounddevice (DVS 64ch).
+# No effect on macOS/Linux.
+if sys.platform.startswith("win"):
+    os.environ.setdefault("SD_ENABLE_ASIO", "1")
+
 import sounddevice as sd
 
 # Add script dir to path for local imports
@@ -27,6 +33,8 @@ from audio_engine import AudioEngine, AudioDevicePool, find_device
 from channel import TieLineChannel
 
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+# Logical tie-line slots (ASIO DVS supports up to 64). UI still pages 8 at a time.
+MAX_CHANNELS = 64
 
 # Theme colors
 COLOR_BG = "#1a1a2e"       # Dark navy background
@@ -488,7 +496,7 @@ class ChannelRow:
 
     def set_logical_index(self, new_index: int):
         """Reuse the same row widget for a different logical channel id.
-        Called on bank switching so 8 widgets cover 8/16/24/32 channels."""
+        Called on bank switching so 8 widgets cover up to 64 channels."""
         self.index = new_index
         self.lbl.configure(text=f"CH {new_index + 1}")
 
@@ -563,7 +571,7 @@ class BridgeApp:
         self._admin_creds: tuple | None = None
         self._admin_company_id = None  # active company for this session
         self._admin_company_name = ""
-        # Per-company channel banks (independent, up to 32 each).
+        # Per-company channel banks (independent, up to MAX_CHANNELS each).
         # Key = str(company_id). Value = dict with channels/total/bank/devices.
         self._by_company: dict = {}
         self._login_companies: list = []  # [{id, name, ...}] from GET /api/auth/companies
@@ -573,13 +581,13 @@ class BridgeApp:
         # The GUI builds exactly ROWS_PER_BANK ChannelRow widgets and reuses
         # them across banks. Anything beyond what's visible lives in
         # `_channel_data` as plain dicts. macOS customtkinter cannot create
-        # 32 widget-rich rows in a reasonable time, so this paging keeps
-        # the on-screen widget count constant and small.
+        # many widget-rich rows in a reasonable time, so this paging keeps
+        # the on-screen widget count constant and small (8 visible).
         self.ROWS_PER_BANK = 8
-        self._total_channels = 16  # default; user can pick 8/16/24/32
+        self._total_channels = 16  # default; user can pick up to 64 (ASIO)
         self._current_bank = 0     # index of the bank currently shown
-        self._channel_data: list[dict] = [{} for _ in range(32)]
-        self._channels_running: list[TieLineChannel | None] = [None] * 32
+        self._channel_data: list[dict] = [{} for _ in range(MAX_CHANNELS)]
+        self._channels_running: list[TieLineChannel | None] = [None] * MAX_CHANNELS
 
         self._build_ui()
         self._load_config()
@@ -609,7 +617,7 @@ class BridgeApp:
                      font=("SF Pro Display", 22, "bold"),
                      text_color="white").pack(side="left", padx=4, pady=8)
 
-        ctk.CTkLabel(header, text="Audio Matrix Bridge v3.8.2 · MME/WASAPI filter",
+        ctk.CTkLabel(header, text="Audio Matrix Bridge v3.9.1 · ASIO duplex (Windows)",
                      font=("SF Pro Display", 13),
                      text_color=COLOR_DIM).pack(side="left", padx=8, pady=8)
 
@@ -732,18 +740,18 @@ class BridgeApp:
         self.audio_api_var = tk.StringVar(value=default_api)
         self.audio_api_combo = ctk.CTkComboBox(
             row2, variable=self.audio_api_var,
-            values=["MME", "WASAPI", "Both", "All"],
-            width=100, height=32, state="readonly",
+            values=["MME", "WASAPI", "ASIO", "Both", "All"],
+            width=110, height=32, state="readonly",
             command=lambda _v: self._on_audio_api_changed(),
         )
         self.audio_api_combo.pack(side="left", padx=4)
 
-        # ---- Total channel count (8 / 16 / 24 / 32) ----
+        # ---- Total channel count (up to 64 for ASIO DVS) ----
         ctk.CTkLabel(row2, text="  Total channels", font=("SF Pro Display", 12),
                      text_color=COLOR_DIM).pack(side="left", padx=(16, 4))
         self._total_var = tk.StringVar(value=str(self._total_channels))
         ctk.CTkComboBox(row2, variable=self._total_var,
-                         values=["8", "16", "24", "32"], width=70, height=32,
+                         values=["8", "16", "24", "32", "48", "64"], width=70, height=32,
                          state="readonly",
                          command=lambda v: self._on_total_changed(int(v))
                          ).pack(side="left", padx=4)
@@ -928,7 +936,7 @@ class BridgeApp:
         self._stash_visible_into_data()
         self._total_channels = new_total
         # Wipe entries past the new total so they aren't saved.
-        for i in range(new_total, 32):
+        for i in range(new_total, MAX_CHANNELS):
             self._channel_data[i] = {}
         # Snap current bank into range.
         max_bank = self._bank_count() - 1
@@ -1002,8 +1010,10 @@ class BridgeApp:
 
     @staticmethod
     def _hostapi_kind(hostapi_name: str) -> str:
-        """Normalize PortAudio host API name → MME | WASAPI | OTHER."""
+        """Normalize PortAudio host API name → MME | WASAPI | ASIO | OTHER."""
         n = (hostapi_name or "").lower()
+        if "asio" in n:
+            return "ASIO"
         if "wasapi" in n:
             return "WASAPI"
         if n.strip() == "mme" or n.startswith("mme") or " mme" in f" {n}":
@@ -1016,7 +1026,7 @@ class BridgeApp:
     @staticmethod
     def _hostapi_short_tag(hostapi_name: str) -> str:
         kind = BridgeApp._hostapi_kind(hostapi_name)
-        if kind in ("MME", "WASAPI"):
+        if kind in ("MME", "WASAPI", "ASIO"):
             return kind
         # Keep a short readable tag for DirectSound / WDM-KS / Core Audio…
         n = (hostapi_name or "?").strip()
@@ -1042,6 +1052,8 @@ class BridgeApp:
             return kind == "MME"
         if mode == "WASAPI":
             return kind == "WASAPI"
+        if mode == "ASIO":
+            return kind == "ASIO"
         return True
 
     def _on_audio_api_changed(self):
@@ -1118,13 +1130,19 @@ class BridgeApp:
                 except Exception:
                     pass
             if prefer_multi:
+                best = None
+                best_n = -1
                 for item in items:
                     try:
                         ch_count = int(item.rsplit("(", 1)[1].split("ch")[0])
                     except (IndexError, ValueError):
                         ch_count = 0
-                    if ch_count > 2:
-                        return item
+                    # Prefer multi-channel (ASIO DVS 64, MADI, etc.)
+                    if ch_count > best_n:
+                        best_n = ch_count
+                        best = item
+                if best is not None and best_n > 2:
+                    return best
             return items[0] if items else ""
 
         self.input_dev_var.set(_pick(prev_in, inputs, prefer_multi=True))
@@ -1352,12 +1370,22 @@ class BridgeApp:
     def _load_company_bank_into_ui(self, bank: dict | None):
         """Replace visible channel bank with a per-company snapshot (or empty)."""
         # Clear all 32 slots first
-        self._channel_data = [{} for _ in range(32)]
-        self._channels_running = [None] * 32
+        self._channel_data = [{} for _ in range(MAX_CHANNELS)]
+        self._channels_running = [None] * MAX_CHANNELS
         bank = bank or {}
         total = bank.get("total_channels", 16)
-        if total not in (8, 16, 24, 32):
-            total = 16
+        if total not in (8, 16, 24, 32, 48, 64):
+            try:
+                total = int(total)
+            except (TypeError, ValueError):
+                total = 16
+            # Snap to nearest allowed size
+            for cand in (8, 16, 24, 32, 48, 64):
+                if total <= cand:
+                    total = cand
+                    break
+            else:
+                total = 64
         self._total_channels = total
         self._total_var.set(str(total))
         if bank.get("input_device"):
@@ -1371,7 +1399,7 @@ class BridgeApp:
                 idx = int(ch_cfg.get("index", 0)) - 1
             except (TypeError, ValueError):
                 continue
-            if 0 <= idx < 32:
+            if 0 <= idx < MAX_CHANNELS:
                 self._channel_data[idx] = dict(ch_cfg)
         bank_i = int(bank.get("current_bank", 0) or 0)
         max_bank = self._bank_count() - 1
@@ -1682,14 +1710,14 @@ class BridgeApp:
             except (TypeError, ValueError):
                 pass
         if max_idx > self._total_channels:
-            for t in (8, 16, 24, 32):
-                if max_idx <= t:
-                    self._total_channels = t
-                    self._total_var.set(str(t))
+            for tsz in (8, 16, 24, 32, 48, 64):
+                if max_idx <= tsz:
+                    self._total_channels = tsz
+                    self._total_var.set(str(tsz))
                     break
         for ch in channels:
             idx = ch.get("index", 0) - 1
-            if not (0 <= idx < 32):
+            if not (0 <= idx < MAX_CHANNELS):
                 continue
             # Skip overwriting a slot that is live-connected
             if self._channels_running[idx] is not None:
@@ -2069,7 +2097,7 @@ class BridgeApp:
         api = config.get("audio_api") or (
             "MME" if sys.platform.startswith("win") else "All"
         )
-        if api not in ("MME", "WASAPI", "Both", "All"):
+        if api not in ("MME", "WASAPI", "ASIO", "Both", "All"):
             api = "All"
         if hasattr(self, "audio_api_var"):
             self.audio_api_var.set(api)

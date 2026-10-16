@@ -22,7 +22,7 @@ echo. >> "%LOG%"
 
 echo.
 echo ============================================
-echo    TieLine Bridge v3.3.0 - Windows Installer
+echo    TieLine Bridge v3.9.0 - Windows Installer
 echo ============================================
 echo    (Log: install.log)
 echo.
@@ -122,6 +122,9 @@ if %ERRORLEVEL% NEQ 0 (
 )
 echo   All packages installed
 echo   All packages installed OK >> "%LOG%"
+echo   Ensuring sounddevice with ASIO support... >> "%LOG%"
+python -m pip install "sounddevice>=0.5.1" >> "%LOG%" 2>&1
+
 
 REM ---- 4. Download opus.dll ----
 echo.
@@ -217,7 +220,8 @@ echo [6/6] Creating launcher... >> "%LOG%"
 echo   BRIDGE_DIR=%BRIDGE_DIR% >> "%LOG%"
 
 REM Create run.bat (line by line to avoid percent-escaping issues)
-echo @echo off> "%BRIDGE_DIR%\TieLine_Bridge.bat"
+echo @echo off>
+REM patched below "%BRIDGE_DIR%\TieLine_Bridge.bat"
 echo cd /d "%%~dp0">> "%BRIDGE_DIR%\TieLine_Bridge.bat"
 echo call .venv\Scripts\activate.bat>> "%BRIDGE_DIR%\TieLine_Bridge.bat"
 echo python bridge_gui.py>> "%BRIDGE_DIR%\TieLine_Bridge.bat"
@@ -231,7 +235,8 @@ if exist "%BRIDGE_DIR%\TieLine_Bridge.bat" (
     echo   [ERROR] TieLine_Bridge.bat NOT created >> "%LOG%"
     echo   Trying alternative path... >> "%LOG%"
     REM Fallback: try writing to current directory
-    echo @echo off> TieLine_Bridge.bat
+    echo @echo off>
+REM patched below TieLine_Bridge.bat
     echo cd /d "%%~dp0">> TieLine_Bridge.bat
     echo call .venv\Scripts\activate.bat>> TieLine_Bridge.bat
     echo python bridge_gui.py>> TieLine_Bridge.bat
@@ -273,4 +278,16 @@ echo    Or:  Desktop shortcut
 echo.
 echo    Log saved to: install.log
 echo.
+
+REM ---- Launch script with ASIO enabled (64ch DVS) ----
+echo Creating TieLine_Bridge.bat with ASIO...
+(
+echo @echo off
+echo cd /d "%%~dp0"
+echo set SD_ENABLE_ASIO=1
+echo if exist ".venv\Scripts\activate.bat" call ".venv\Scripts\activate.bat"
+echo python bridge_gui.py
+echo if errorlevel 1 pause
+) > "%BRIDGE_DIR%\TieLine_Bridge.bat"
+echo   TieLine_Bridge.bat OK (SD_ENABLE_ASIO=1) >> "%LOG%"
 pause
